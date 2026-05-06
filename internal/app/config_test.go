@@ -6,8 +6,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	t.Setenv("LISTEN_ADDR", ":9090")
 	t.Setenv("TRELLO_API_SECRET", "env-secret")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
-	t.Setenv("FORWARD_URL", "http://127.0.0.1:18789/hooks/agent")
-	t.Setenv("FORWARD_TOKEN", "env-token")
+	t.Setenv("COPILOT_MODEL", "env-model")
 
 	cfg, err := LoadConfig([]string{"cmd"})
 	if err != nil {
@@ -23,16 +22,18 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	if cfg.CallbackURL != "https://env.example.com/trello" {
 		t.Fatalf("unexpected callback: %s", cfg.CallbackURL)
 	}
+	if cfg.CopilotModel != "env-model" {
+		t.Fatalf("unexpected copilot model: %s", cfg.CopilotModel)
+	}
 }
 
 func TestLoadConfigFlagOverridesEnv(t *testing.T) {
 	t.Setenv("LISTEN_ADDR", ":9090")
 	t.Setenv("TRELLO_API_SECRET", "env-secret")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
-	t.Setenv("FORWARD_URL", "http://127.0.0.1:18789/hooks/agent")
-	t.Setenv("FORWARD_TOKEN", "env-token")
+	t.Setenv("COPILOT_MODEL", "env-model")
 
-	cfg, err := LoadConfig([]string{"cmd", "--listen", ":8088", "--trello-api-secret", "flag-secret"})
+	cfg, err := LoadConfig([]string{"cmd", "--listen", ":8088", "--trello-api-secret", "flag-secret", "--copilot-model", "flag-model"})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -43,6 +44,9 @@ func TestLoadConfigFlagOverridesEnv(t *testing.T) {
 	if cfg.TrelloSecret != "flag-secret" {
 		t.Fatalf("expected secret from flag, got %s", cfg.TrelloSecret)
 	}
+	if cfg.CopilotModel != "flag-model" {
+		t.Fatalf("expected copilot model from flag, got %s", cfg.CopilotModel)
+	}
 }
 
 func TestLoadConfigMissingRequired(t *testing.T) {
@@ -52,11 +56,9 @@ func TestLoadConfigMissingRequired(t *testing.T) {
 	}
 }
 
-func TestLoadConfigDefaultListenAddr(t *testing.T) {
+func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("TRELLO_API_SECRET", "env-secret")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
-	t.Setenv("FORWARD_URL", "http://127.0.0.1:18789/hooks/agent")
-	t.Setenv("FORWARD_TOKEN", "env-token")
 
 	cfg, err := LoadConfig([]string{"cmd"})
 	if err != nil {
@@ -66,5 +68,7 @@ func TestLoadConfigDefaultListenAddr(t *testing.T) {
 	if cfg.ListenAddr != ":18790" {
 		t.Fatalf("expected default listen addr :18790, got %s", cfg.ListenAddr)
 	}
+	if cfg.CopilotModel != DefaultCopilotModel {
+		t.Fatalf("expected default copilot model %q, got %q", DefaultCopilotModel, cfg.CopilotModel)
+	}
 }
-

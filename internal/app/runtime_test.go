@@ -4,12 +4,17 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
 )
 
 func TestGracefulShutdownOnSIGTERM(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process SIGTERM delivery is not supported consistently on Windows")
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

@@ -11,25 +11,35 @@ type Config struct {
 	ListenAddr   string
 	TrelloSecret string
 	CallbackURL  string
-	ForwardURL   string
-	ForwardToken string
+	CopilotModel string
+	// RouterDir is the directory containing the per-work_type entry
+	// playbook markdown files (e.g. azurerm_provider_issue.md) and the
+	// trello-get-card-info.ps1 helper script under scripts/. The gateway
+	// reads the appropriate entry playbook into each worker's system
+	// prompt at session creation time.
+	RouterDir string
 }
+
+// DefaultRouterDir is the conventional location of the workspace-trello-router
+// checkout on the operator's machine. Override via WORKSPACE_TRELLO_ROUTER_DIR
+// or --router-dir.
+const DefaultRouterDir = `C:\Users\zjhe\.openclaw\workspace-trello-router`
 
 func LoadConfig(args []string) (Config, error) {
 	cfg := Config{
 		ListenAddr:   envOrDefault("LISTEN_ADDR", ":18790"),
 		TrelloSecret: os.Getenv("TRELLO_API_SECRET"),
 		CallbackURL:  os.Getenv("CALLBACK_URL"),
-		ForwardURL:   os.Getenv("FORWARD_URL"),
-		ForwardToken: os.Getenv("FORWARD_TOKEN"),
+		CopilotModel: envOrDefault("COPILOT_MODEL", DefaultCopilotModel),
+		RouterDir:    envOrDefault("WORKSPACE_TRELLO_ROUTER_DIR", DefaultRouterDir),
 	}
 
 	fs := flag.NewFlagSet("gateway", flag.ContinueOnError)
 	fs.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "listen address")
 	fs.StringVar(&cfg.TrelloSecret, "trello-api-secret", cfg.TrelloSecret, "Trello API secret")
 	fs.StringVar(&cfg.CallbackURL, "callback-url", cfg.CallbackURL, "webhook callback URL used for signature verification")
-	fs.StringVar(&cfg.ForwardURL, "forward-url", cfg.ForwardURL, "OpenClaw webhook URL")
-	fs.StringVar(&cfg.ForwardToken, "forward-token", cfg.ForwardToken, "OpenClaw bearer token")
+	fs.StringVar(&cfg.CopilotModel, "copilot-model", cfg.CopilotModel, "Copilot model to use for the agent session")
+	fs.StringVar(&cfg.RouterDir, "router-dir", cfg.RouterDir, "directory containing per-work_type entry playbooks and trello scripts")
 
 	if err := fs.Parse(args[1:]); err != nil {
 		return Config{}, err
@@ -49,11 +59,8 @@ func validateConfig(cfg Config) error {
 	if cfg.CallbackURL == "" {
 		return errors.New("missing callback URL, set --callback-url or CALLBACK_URL")
 	}
-	if cfg.ForwardURL == "" {
-		return errors.New("missing forward URL, set --forward-url or FORWARD_URL")
-	}
-	if cfg.ForwardToken == "" {
-		return errors.New("missing forward token, set --forward-token or FORWARD_TOKEN")
+	if cfg.CopilotModel == "" {
+		return errors.New("missing copilot model, set --copilot-model or COPILOT_MODEL")
 	}
 	return nil
 }
@@ -67,7 +74,7 @@ func envOrDefault(key, fallback string) string {
 }
 
 func (c Config) Redacted() string {
-	return fmt.Sprintf("listen=%s callback_url=%s forward_url=%s trello_api_secret=%s forward_token=%s", c.ListenAddr, c.CallbackURL, c.ForwardURL, redact(c.TrelloSecret), redact(c.ForwardToken))
+	return fmt.Sprintf("listen=%s callback_url=%s copilot_model=%s router_dir=%s trello_api_secret=%s", c.ListenAddr, c.CallbackURL, c.CopilotModel, c.RouterDir, redact(c.TrelloSecret))
 }
 
 func redact(v string) string {

@@ -1,88 +1,109 @@
-# Trello Webhook Local Gateway
+# Trello Copilot Gateway
 
-A local forwarding gateway for Trello webhooks, implemented with Go + Gin.
+Trello Copilot Gateway is a local Go service that turns Trello webhook events into dedicated GitHub Copilot worker sessions.
 
-## Background
+It receives signed Trello callbacks, verifies that they are authentic, routes each card event, and dispatches work to a per-card Copilot session. Each card is processed serially while different cards can run in parallel.
 
-In this setup, two systems need to be connected:
+## What this project does
 
-- Trello webhook: sends board events to your `callbackURL`
-- OpenClaw webhook (`/hooks/agent`): requires `Authorization: Bearer <token>` on every request
+The project is an automation bridge for a Trello-based engineering workflow:
 
-The problem is that Trello webhooks do not support custom HTTP headers, so Trello cannot directly send a Bearer token to OpenClaw.
+1. Trello sends card events to this gateway.
+2. The gateway verifies the `X-Trello-Webhook` HMAC signature.
+3. The event is reduced to routing-safe fields to limit prompt-injection surface.
+4. Routing decides whether to drop the event, spawn or notify a worker, notify an existing worker that a card left an active list, or terminate a worker.
+5. A Copilot worker session receives a system prompt assembled from embedded prompt files plus card metadata.
+6. The worker follows the injected workflow guidance to analyze, plan, act, or cleanly hand off work.
 
-That is why this gateway exists. It handles three responsibilities:
+The gateway is not a generic Trello-to-HTTP forwarder anymore. It directly manages Copilot SDK sessions, worker lifecycle, card-specific queues, activity logs, and a small operator interface.
 
-1. Receive Trello webhook requests
-2. Verify that requests are genuinely from Trello (signature verification)
-3. Transform and forward the payload to OpenClaw with an injected Bearer token
+## Key features
 
-This project was built specifically to solve that integration gap.
+- Trello webhook `HEAD /` validation support.
+- Trello webhook `POST /` signature verification using `HMAC-SHA1(secret, raw_body + callbackURL)`.
+- Minimal event payload extraction for safer prompt assembly.
+- Deterministic event routing for Trello card moves, comments, creation, deletion, and terminal events.
+- One worker queue per Trello card, with same-card events processed in order.
+- Dedicated Copilot worker sessions created lazily per active card.
+- Worker system prompt composition from embedded `BOOTSTRAP`, `IDENTITY`, `WORKER`, `TOOLS`, `USER`, and card context sections.
+- Optional work-type pre-classification from Trello card metadata and router playbooks.
+- Terminal UI when stdin is a TTY; line-oriented REPL when running headless.
+- Runtime log file written to `trellooperator.log`.
 
-## OpenClaw Webhook Behavior (Why This Gateway Exists)
+## Repository layout
 
-Based on OpenClaw's public webhook documentation and gateway config reference (`docs/automation/webhook.md` and `docs/gateway/configuration-reference.md` in `openclaw/openclaw`):
+- `main.go` — program entry point.
+- `internal/app/config.go` — CLI flag and environment configuration.
+- `internal/app/server.go` — Gin HTTP server and Trello webhook handling.
+- `internal/app/verify.go` — Trello signature verification.
+- `internal/app/routing.go` — Trello event routing rules.
+- `internal/app/dispatcher.go` — per-card worker queues and lifecycle management.
+- `internal/app/runner.go` — Copilot SDK client and worker session creation.
+- `internal/app/prompts/` — embedded base prompt fragments.
+- `internal/app/repl.go` and `internal/app/tui.go` — operator interfaces.
 
-- OpenClaw exposes hook endpoints under `/hooks` (default path), including:
-  - `POST /hooks/wake`
-  - `POST /hooks/agent`
-  - `POST /hooks/<name>` (mapping-based)
-- Hook requests require token authentication, typically:
-  - `Authorization: Bearer <token>` (recommended)
-  - `x-openclaw-token: <token>`
-- For `/hooks/agent`, the JSON payload requires a `message` field; optional fields include `name`, `agentId`, `sessionKey`, `deliver`, `channel`, `to`, and others.
+## Configuration
 
-Why this matters for Trello integration:
+Both CLI flags and environment variables are supported. CLI flags take precedence.
 
-- Trello webhooks cannot set custom authorization headers.
-- OpenClaw hooks require authenticated requests and a `message` payload.
-- Therefore this gateway verifies Trello signatures, injects Bearer auth, and transforms Trello events into an OpenClaw-compatible `/hooks/agent` request.
+| Flag | Environment variable | Default | Description |
+|---|---|---|---|
+| `--listen` | `LISTEN_ADDR` | `:18790` | HTTP listen address. |
+| `--trello-api-secret` | `TRELLO_API_SECRET` | required | Trello API secret used for webhook signature verification. |
+| `--callback-url` | `CALLBACK_URL` | required | Public webhook callback URL registered in Trello. It must exactly match the URL Trello signs. |
+| `--copilot-model` | `COPILOT_MODEL` | `claude-opus-4.6-1m` | Copilot model name used for worker sessions. |
+| `--router-dir` | `WORKSPACE_TRELLO_ROUTER_DIR` | `C:\Users\zjhe\.openclaw\workspace-trello-router` | Directory containing router playbooks and Trello helper scripts. |
 
-## Core Design
+## Quick start
 
-- Framework: `github.com/gin-gonic/gin`
-- Architecture: `main` is separated from business logic
-  - Entry point: `cmd/trello-openclaw-webhook-gateway/main.go`
-  - Business logic: `internal/app/*`
-- Signature verification: `HMAC-SHA1(secret, raw_body + callbackURL)`, then Base64-compare with `X-Trello-Webhook`
-- Forward request timeout: 30 seconds
-- Graceful shutdown: supports `SIGINT/SIGTERM`
-- Logging: stdout with timestamps
+### 1. Build
 
-## Request Flow
+```bash
+go build -o trello-copilot .
+```
 
-1. Trello sends a `HEAD` request when creating a webhook:
-- The gateway returns `200` so Trello's callback URL validation succeeds
+### 2. Run with environment variables
 
-2. Trello sends `POST` requests for events:
-- Read the raw body
-- Read `X-Trello-Webhook`
-- Compute signature using `TRELLO_API_SECRET` + `CALLBACK_URL` and verify it
-- Return `403` if verification fails
-- If verification passes, forward a slimmed JSON payload
+```bash
+export LISTEN_ADDR=":18790"
+export TRELLO_API_SECRET="your_trello_api_secret"
+export CALLBACK_URL="https://your-public-domain/"
+export COPILOT_MODEL="claude-opus-4.6-1m"
+export WORKSPACE_TRELLO_ROUTER_DIR="C:\\Users\\zjhe\\.openclaw\\workspace-trello-router"
 
-3. Forward to OpenClaw:
-- URL: `FORWARD_URL`
-- Header: `Authorization: Bearer <FORWARD_TOKEN>`
-- Body: a slimmed Trello JSON that keeps only required fields:
-  - `action.type`
-  - `action.data.card.id`
-  - `action.data.listBefore.name`
-  - `action.data.listBefore.id`
-  - `action.data.listAfter.name`
-  - `action.data.listAfter.id`
+./trello-copilot
+```
 
-Security note:
+### 3. Run with CLI flags
 
-- Field slimming is intentional to reduce prompt injection risk.
-- The gateway drops free-form or unnecessary fields (for example comments, descriptions, and other arbitrary text) and only forwards minimal routing fields.
-- This limits untrusted user-generated content from entering the downstream mapping engine.
+```bash
+./trello-copilot \
+  --listen ":18790" \
+  --trello-api-secret "your_trello_api_secret" \
+  --callback-url "https://your-public-domain/" \
+  --copilot-model "claude-opus-4.6-1m" \
+  --router-dir "C:\\Users\\zjhe\\.openclaw\\workspace-trello-router"
+```
 
-4. Propagate OpenClaw's response status code back to Trello.
+## Request flow
 
-## Forwarded Payload Format
+### Trello validation
 
-After signature verification, the gateway forwards a compact payload.
+Trello sends a `HEAD /` request when a webhook is registered. The gateway returns `200 OK` so callback validation succeeds.
+
+### Trello event delivery
+
+For each `POST /` event, the gateway:
+
+1. Reads the raw request body.
+2. Verifies `X-Trello-Webhook` against `TRELLO_API_SECRET` and `CALLBACK_URL`.
+3. Logs a human-readable event summary.
+4. Immediately returns `202 Accepted` to Trello to avoid webhook retries.
+5. Processes the event asynchronously through the Copilot runner and dispatcher.
+
+### Routed payload shape
+
+The prompt audit copy and worker event prompts use a slimmed JSON payload containing only routing-relevant fields.
 
 Example:
 
@@ -99,67 +120,36 @@ Example:
 }
 ```
 
-## Message Generation Rules
+Free-form card text, comments, descriptions, board names, and member names are intentionally omitted from this slim payload.
 
-- If both `listBefore` and `listAfter` exist:
-  - `Trello: card "{card.name}" moved from "{listBefore.name}" to "{listAfter.name}" (by {memberCreator.fullName})`
-- If `action.type == commentCard`:
-  - `Trello: {memberCreator.fullName} commented on card "{card.name}": {action.data.text}`
-- For other action types:
-  - `Trello: {action.type} on card "{card.name}" in board "{board.name}" by {memberCreator.fullName}`
-  - Append compact raw JSON
+## Worker routing summary
 
-## Configuration
+Routing is centered on Trello card IDs:
 
-Both CLI flags and environment variables are supported (CLI flags take precedence):
+- Moves into active lists (`Analyze`, `In action`) dispatch to a worker.
+- Human comments dispatch to a worker.
+- Agent comments beginning with `[agent]:` are dropped to avoid feedback loops.
+- Moves to `Done` and card deletion terminate an existing worker.
+- Moves to non-active, non-terminal lists notify an existing worker to wind down, but do not spawn a new worker.
+- Unsupported or unrelated events are dropped.
 
-- `--listen` / `LISTEN_ADDR`
-  - Listen address, default `:18790`
-- `--trello-api-secret` / `TRELLO_API_SECRET` (required)
-  - Trello API Secret used for signature verification
-- `--callback-url` / `CALLBACK_URL` (required)
-  - The callback URL used when creating the Trello webhook (must match Trello config exactly)
-- `--forward-url` / `FORWARD_URL` (required)
-  - OpenClaw webhook endpoint (for example: `http://127.0.0.1:18789/hooks/agent`)
-- `--forward-token` / `FORWARD_TOKEN` (required)
-  - OpenClaw Bearer token
+## Operator interfaces
 
-## Quick Start
+When stdin is a terminal, the gateway starts a full-screen TUI showing active workers, selected-card activity, and global events.
 
-### 1. Build
+When stdin is not a terminal, it starts a simple REPL. Available commands include:
 
-```bash
-go build -o trello-gateway ./cmd/trello-openclaw-webhook-gateway
-```
+- `ls` — list active workers.
+- `show <card_id>` — show detailed worker status and recent activity.
+- `dump <card_id>` — print the worker activity log path.
+- `help` — print command help.
+- `quit` / `exit` — leave the REPL.
 
-### 2. Run with Environment Variables
-
-```bash
-export LISTEN_ADDR=":18790"
-export TRELLO_API_SECRET="your_trello_api_secret"
-export CALLBACK_URL="https://your-public-domain/"
-export FORWARD_URL="http://127.0.0.1:18789/hooks/agent"
-export FORWARD_TOKEN="your_openclaw_token"
-
-./trello-gateway
-```
-
-### 3. Run with CLI Flags
-
-```bash
-./trello-gateway \
-  --listen ":18790" \
-  --trello-api-secret "your_trello_api_secret" \
-  --callback-url "https://your-public-domain/" \
-  --forward-url "http://127.0.0.1:18789/hooks/agent" \
-  --forward-token "your_openclaw_token"
-```
-
-## Development and Testing
+## Development and testing
 
 ```bash
 go test ./...
 go build ./...
 ```
 
-The current implementation includes test coverage for configuration, signature verification, message building, forwarding, and request routing.
+The test suite covers configuration, signature verification, event message generation, routing, dispatching, prompt embedding, worker bootstrap behavior, logging helpers, and the operator interfaces.
