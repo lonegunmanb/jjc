@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -384,4 +385,113 @@ func TestDispatcherIdleTimeoutWorkerAcceptsNewEvents(t *testing.T) {
 		secondSession.mu.Unlock()
 		return n == 1
 	}, "second event processed on new session")
+}
+
+func TestDispatcherDeleteWorkerNotFound(t *testing.T) {
+	factory := newFakeFactory()
+	d := NewDispatcher(log.Default(), factory)
+	defer d.Stop()
+
+	if _, err := d.DeleteWorker("nope"); !errors.Is(err, ErrWorkerNotFound) {
+		t.Fatalf("expected ErrWorkerNotFound, got %v", err)
+	}
+}
+
+func TestDispatcherDeleteWorkerRemovesWorkdirAndDeregisters(t *testing.T) {
+	factory := newFakeFactory()
+	d := NewDispatcher(log.Default(), factory)
+	defer d.Stop()
+
+	const cardID = "del-card"
+	body := `{"action":{"type":"updateCard","data":{"card":{"id":"` + cardID + `"},"listAfter":{"name":"Analyze"}}}}`
+	dispatchEvent(t, d, "evt", body)
+
+	// Wait for the worker to land its first prompt so the goroutine and
+	// session are fully spun up before we attempt the delete.
+	waitFor(t, 2*time.Second, func() bool {
+		s := factory.get(cardID)
+		if s == nil {
+			return false
+		}
+		s.mu.Lock()
+		n := len(s.prompts)
+		s.mu.Unlock()
+		return n == 1
+	}, "first prompt processed")
+
+	// Plant a fake work_dir so DeleteWorker has something to remove.
+	tmp := t.TempDir()
+	workDir := tmp + string(os.PathSeparator) + "wd-" + cardID
+	if err := os.Mkdir(workDir, 0o755); err != nil {
+		t.Fatalf("mkdir workdir: %v", err)
+	}
+	d.mu.Lock()
+	d.workers[cardID].tracker.SetWorkDir(workDir)
+	d.mu.Unlock()
+
+	removed, err := d.DeleteWorker(cardID)
+	if err != nil {
+		t.Fatalf("DeleteWorker: %v", err)
+	}
+	if removed != workDir {
+		t.Fatalf("expected removed=%q, got %q", workDir, removed)
+	}
+	if _, statErr := os.Stat(workDir); !os.IsNotExist(statErr) {
+		t.Fatalf("expected work_dir gone, stat err = %v", statErr)
+	}
+
+	// Worker must be deregistered.
+	d.mu.Lock()
+	_, stillRegistered := d.workers[cardID]
+	d.mu.Unlock()
+	if stillRegistered {
+		t.Fatalf("worker still registered after DeleteWorker")
+	}
+
+	// Session must have been disconnected.
+	s := factory.get(cardID)
+	if s == nil {
+		t.Fatalf("session missing")
+	}
+	if got := atomic.LoadInt32(&s.disconnectCount); got == 0 {
+		t.Fatalf("expected session disconnected, got count=%d", got)
+	}
+
+	// A subsequent dispatch for the same card spawns a fresh worker.
+	dispatchEvent(t, d, "evt-2", body)
+	waitFor(t, 2*time.Second, func() bool {
+		factory.mu.Lock()
+		defer factory.mu.Unlock()
+		return len(factory.createOrder) == 2
+	}, "fresh worker after delete")
+}
+
+func TestDispatcherDeleteWorkerCancelsInflightSend(t *testing.T) {
+	factory := newFakeFactory()
+	// Long delay so SendAndWait blocks; DeleteWorker must cancel the ctx
+	// passed into it so the goroutine returns promptly.
+	factory.delay = 5 * time.Second
+	d := NewDispatcher(log.Default(), factory)
+	defer d.Stop()
+
+	const cardID = "kill-card"
+	body := `{"action":{"type":"updateCard","data":{"card":{"id":"` + cardID + `"},"listAfter":{"name":"Analyze"}}}}`
+	dispatchEvent(t, d, "evt", body)
+
+	// Wait until the worker has actually entered SendAndWait.
+	waitFor(t, 2*time.Second, func() bool {
+		s := factory.get(cardID)
+		if s == nil {
+			return false
+		}
+		return atomic.LoadInt32(&s.concurrent) == 1
+	}, "send to be in flight")
+
+	start := time.Now()
+	if _, err := d.DeleteWorker(cardID); err != nil {
+		t.Fatalf("DeleteWorker: %v", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("DeleteWorker took %s — expected fast cancellation", d)
+	}
 }

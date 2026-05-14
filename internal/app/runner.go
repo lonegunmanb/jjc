@@ -42,6 +42,14 @@ type CopilotRunner struct {
 	routerDir       string
 	cardInfoFetcher CardInfoFetcher
 
+	// preparer turns a card classification into a ready-to-use per-card
+	// work_dir (mkdir + optional git clone) and runs registered hooks.
+	// It replaces the inline os.MkdirAll that used to live in
+	// NewWorkerSession and is the single extension point for "do
+	// something the moment a worker's work_dir is ready" (e.g.
+	// refresh-copilot-setup.ps1, prefetching submodules, ...).
+	preparer *WorkDirPreparer
+
 	clientMu sync.Mutex
 	client   *copilot.Client
 
@@ -63,9 +71,59 @@ func NewCopilotRunner(model string, logger *log.Logger) *CopilotRunner {
 	if logger == nil {
 		logger = log.Default()
 	}
-	r := &CopilotRunner{model: model, logger: logger, dedupMaxLen: 256}
+	r := &CopilotRunner{
+		model:       model,
+		logger:      logger,
+		dedupMaxLen: 256,
+		preparer:    NewWorkDirPreparer(logger),
+	}
 	r.dispatcher = NewDispatcher(logger, r)
 	return r
+}
+
+// WorkDirPreparer returns the preparer responsible for creating each
+// per-card work_dir. Use it to install custom WorkDirHooks (see
+// WorkDirHook) before the first worker session is created. Returned
+// preparer is safe for concurrent registration.
+func (r *CopilotRunner) WorkDirPreparer() *WorkDirPreparer { return r.preparer }
+
+// RegisterWorkDirHook is a convenience wrapper around
+// WorkDirPreparer().RegisterHook for callers that don't need direct
+// access to the preparer (e.g. main wiring code).
+func (r *CopilotRunner) RegisterWorkDirHook(h WorkDirHook) {
+	if r.preparer == nil {
+		return
+	}
+	r.preparer.RegisterHook(h)
+}
+
+// SessionSpawner abstracts "give me a new ephemeral Copilot session
+// configured per the supplied SessionConfig". It exists so WorkDirHooks
+// (or any other peripheral component) can spin up a one-shot session
+// without holding a *copilot.Client themselves — and so tests can
+// substitute a stub spawner without standing up the real SDK client.
+type SessionSpawner interface {
+	Spawn(ctx context.Context, cfg *copilot.SessionConfig) (*copilot.Session, error)
+}
+
+// SessionSpawner returns a spawner backed by the runner's underlying
+// Copilot client. The spawner resolves the client lazily on every call,
+// so it is safe to obtain (and pass into hook constructors) before
+// Start() is invoked. Spawning before Start returns an error.
+func (r *CopilotRunner) SessionSpawner() SessionSpawner {
+	return runnerSessionSpawner{r: r}
+}
+
+type runnerSessionSpawner struct{ r *CopilotRunner }
+
+func (s runnerSessionSpawner) Spawn(ctx context.Context, cfg *copilot.SessionConfig) (*copilot.Session, error) {
+	s.r.clientMu.Lock()
+	client := s.r.client
+	s.r.clientMu.Unlock()
+	if client == nil {
+		return nil, errors.New("copilot client not started; call Start before spawning a session")
+	}
+	return client.CreateSession(ctx, cfg)
 }
 
 // Model returns the configured Copilot model name.
@@ -221,13 +279,15 @@ func (r *CopilotRunner) NewWorkerSession(ctx context.Context, cardID string, tra
 	// Anchor every tool call (view/grep/glob/exec relative paths) to the
 	// per-card work_dir so the session cannot accidentally roam into the
 	// gateway repo (which is the parent process CWD on most operator
-	// machines). Create the directory eagerly — the SDK rejects a
-	// non-existent WorkingDirectory.
-	workDir := filepath.Join(`C:\project`, cardID)
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		r.logger.Printf("event=worker_workdir_mkdir_failed card_id=%s work_dir=%s err=%v", cardID, workDir, err)
-		return nil, fmt.Errorf("ensure work_dir %s: %w", workDir, err)
+	// machines). The preparer creates the directory eagerly (the SDK
+	// rejects a non-existent WorkingDirectory), clones the GitHub repo
+	// when one is attached to the card, and fans out to every registered
+	// WorkDirHook (e.g. refresh-copilot-setup.ps1).
+	info, err := r.preparer.Prepare(ctx, cardID, bs.classification)
+	if err != nil {
+		return nil, err
 	}
+	workDir := info.WorkDir
 	if tracker != nil {
 		tracker.SetWorkDir(workDir)
 	}
@@ -391,7 +451,10 @@ func buildCardContext(bs workerBootstrap) string {
 	var b strings.Builder
 	b.WriteString("You have been spawned by the Trello webhook gateway as the dedicated worker ")
 	b.WriteString("for the following card. This metadata is authoritative — do not infer card_id, ")
-	b.WriteString("work_type, or work_dir from any other source.\n\n")
+	b.WriteString("work_type, or work_dir from any other source. The gateway has already prepared ")
+	b.WriteString("work_dir for you (mkdir + `git clone --depth 1` when a github_repo is attached) ")
+	b.WriteString("and fired every registered work_dir hook before this session was created — do ")
+	b.WriteString("NOT re-run `git clone` or recreate the directory yourself.\n\n")
 	b.WriteString("- card_id: ")
 	b.WriteString(bs.cardID)
 	b.WriteString("\n- work_dir: C:\\project\\")

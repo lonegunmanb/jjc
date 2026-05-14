@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -65,6 +66,14 @@ type workerHandle struct {
 	// done is closed after the worker goroutine exits and the session has
 	// been disconnected. Used by Stop to wait for orderly shutdown.
 	done chan struct{}
+	// ctx is cancelled by DeleteWorker so an in-flight SendAndWait (which
+	// can otherwise block for the model's full think+tool cycle) returns
+	// promptly with ctx.Err().
+	ctx    context.Context
+	cancel context.CancelFunc
+	// kill is closed by DeleteWorker to ask the worker goroutine to exit
+	// immediately without draining any remaining inbox messages.
+	kill chan struct{}
 }
 
 // DefaultIdleTimeout is how long a worker session may sit idle before the
@@ -111,6 +120,15 @@ func NewDispatcher(logger *log.Logger, factory SessionFactory) *Dispatcher {
 
 // ErrDispatcherStopped is returned by Dispatch after Stop has been called.
 var ErrDispatcherStopped = errors.New("dispatcher stopped")
+
+// ErrWorkerNotFound is returned by DeleteWorker when no worker is
+// currently registered for the given card.
+var ErrWorkerNotFound = errors.New("no active worker for card")
+
+// ErrWorkerDeleted is returned by Dispatch when an enqueue races with a
+// DeleteWorker call that tears the worker down before the message lands
+// in the inbox.
+var ErrWorkerDeleted = errors.New("worker deleted")
 
 // SetGlobalLog attaches a GlobalEventLog for TUI display. If set, key
 // lifecycle events (routing decisions, worker registration/deregistration,
@@ -197,11 +215,15 @@ func (d *Dispatcher) enqueue(ctx context.Context, cardID string, msg dispatchMes
 	}
 	handle, ok := d.workers[cardID]
 	if !ok {
+		wctx, wcancel := context.WithCancel(context.Background())
 		handle = &workerHandle{
 			cardID:  cardID,
 			inbox:   make(chan dispatchMessage, d.inboxBuf),
 			tracker: NewActivityTracker(cardID, 64),
 			done:    make(chan struct{}),
+			ctx:     wctx,
+			cancel:  wcancel,
+			kill:    make(chan struct{}),
 		}
 		d.workers[cardID] = handle
 		go d.runWorker(handle)
@@ -214,6 +236,8 @@ func (d *Dispatcher) enqueue(ctx context.Context, cardID string, msg dispatchMes
 	case handle.inbox <- msg:
 		d.logger.Printf("event=worker_enqueued card_id=%s event_id=%s kind=%d", cardID, msg.eventID, msg.kind)
 		return nil
+	case <-handle.kill:
+		return ErrWorkerDeleted
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -256,6 +280,9 @@ func (d *Dispatcher) runWorker(handle *workerHandle) {
 			select {
 			case msg, ok = <-handle.inbox:
 				timer.Stop()
+			case <-handle.kill:
+				timer.Stop()
+				return
 			case <-timer.C:
 				d.logger.Printf("event=worker_session_idle_reaped card_id=%s timeout=%s",
 					handle.cardID, d.idleTimeout)
@@ -269,7 +296,11 @@ func (d *Dispatcher) runWorker(handle *workerHandle) {
 				continue
 			}
 		} else {
-			msg, ok = <-handle.inbox
+			select {
+			case msg, ok = <-handle.inbox:
+			case <-handle.kill:
+				return
+			}
 		}
 
 		if !ok {
@@ -295,9 +326,14 @@ func (d *Dispatcher) runWorker(handle *workerHandle) {
 		started := time.Now()
 		d.logger.Printf("event=worker_send_start card_id=%s event_id=%s kind=%d prompt_bytes=%d",
 			handle.cardID, msg.eventID, msg.kind, len(msg.prompt))
-		if err := session.SendAndWait(context.Background(), msg.prompt); err != nil {
+		if err := session.SendAndWait(handle.ctx, msg.prompt); err != nil {
 			d.logger.Printf("event=worker_send_error card_id=%s event_id=%s err=%v",
 				handle.cardID, msg.eventID, err)
+			// If the worker was killed mid-send, exit instead of looping
+			// fast on ctx errors.
+			if handle.ctx.Err() != nil {
+				return
+			}
 			// Don't tear the worker down on a single send error; the next
 			// event may succeed. A persistent failure will surface as
 			// repeated send errors in the logs.
@@ -347,6 +383,60 @@ func (d *Dispatcher) Stop() {
 		<-h.done
 	}
 	d.logger.Printf("event=dispatcher_stopped workers=%d", len(handles))
+}
+
+// DeleteWorker forcibly tears down the worker for cardID and removes the
+// per-card local work_dir from disk. It is the operator-initiated kill
+// switch invoked from the TUI:
+//
+//  1. The handle is removed from the registry under the dispatcher mutex,
+//     so any subsequent Dispatch for the same card spawns a fresh worker.
+//  2. The kill channel is closed so the worker goroutine exits without
+//     draining any remaining queued messages.
+//  3. The handle's context is cancelled so an in-flight SendAndWait
+//     returns promptly instead of blocking on the model's full
+//     think+tool cycle.
+//  4. After the goroutine has finished disconnecting the session and
+//     closing its activity log, os.RemoveAll wipes the work_dir.
+//
+// Returns the work_dir path that was removed (empty if the worker had not
+// recorded one yet) and any error encountered during the rmdir.
+// Returns ErrWorkerNotFound when no worker is registered for cardID.
+func (d *Dispatcher) DeleteWorker(cardID string) (string, error) {
+	d.mu.Lock()
+	h, ok := d.workers[cardID]
+	if !ok {
+		d.mu.Unlock()
+		return "", ErrWorkerNotFound
+	}
+	delete(d.workers, cardID)
+	d.mu.Unlock()
+
+	// Snapshot work_dir before tearing the worker down — the tracker is
+	// still readable here, but the runWorker defer chain may close the
+	// log file by the time we get a chance to read it again.
+	st, _ := h.tracker.Snapshot()
+	workDir := st.WorkDir
+
+	// Close kill first so the goroutine wakes from any blocking inbox
+	// read; cancel ctx so SendAndWait (if mid-flight) returns promptly.
+	close(h.kill)
+	h.cancel()
+	<-h.done
+
+	d.logger.Printf("event=worker_deleted card_id=%s work_dir=%q", cardID, workDir)
+	d.recordGlobal(cardID, "worker_deleted", workDir)
+
+	if workDir == "" {
+		return "", nil
+	}
+	if err := os.RemoveAll(workDir); err != nil {
+		d.logger.Printf("event=worker_workdir_remove_error card_id=%s work_dir=%q err=%v",
+			cardID, workDir, err)
+		return workDir, fmt.Errorf("remove work_dir %s: %w", workDir, err)
+	}
+	d.logger.Printf("event=worker_workdir_removed card_id=%s work_dir=%q", cardID, workDir)
+	return workDir, nil
 }
 
 // mustSlim slims rawBody, returning an empty payload on error rather than

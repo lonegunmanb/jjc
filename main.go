@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -41,6 +42,30 @@ func main() {
 	runner := app.NewCopilotRunner(cfg.CopilotModel, logger)
 	runner.SetRouterDir(cfg.RouterDir)
 	runner.SetCardInfoFetcher(app.NewScriptCardInfoFetcher(cfg.RouterDir))
+
+	// Register the AzureRM provider refresh hook: when the per-card
+	// work_dir turns out to be a clone of hashicorp/terraform-provider-azurerm
+	// (detected by go.mod's first line), spawn an independent Copilot
+	// session that reads the Trello card to find the issue number and runs
+	// refresh-copilot-setup.ps1 against the work_dir. The hook silently
+	// no-ops for any other repo.
+	if cfg.RouterDir != "" {
+		azurermHook, hookErr := app.NewAzureRMRefreshHook(app.AzureRMRefreshHookOptions{
+			Spawner:            runner.SessionSpawner(),
+			ScriptPath:         filepath.Join(cfg.RouterDir, "scripts", "refresh-copilot-setup.ps1"),
+			CardInfoScriptPath: filepath.Join(cfg.RouterDir, "scripts", "trello-get-card-info.ps1"),
+			Model:              cfg.CopilotModel,
+			Logger:             logger,
+		})
+		if hookErr != nil {
+			logger.Printf("event=azurerm_refresh_hook_register_failed err=%v", hookErr)
+		} else {
+			runner.RegisterWorkDirHook(azurermHook)
+			logger.Printf("event=azurerm_refresh_hook_registered script=%s",
+				filepath.Join(cfg.RouterDir, "scripts", "refresh-copilot-setup.ps1"))
+		}
+	}
+
 	globalLog := app.NewGlobalEventLog(128)
 	runner.Dispatcher().SetGlobalLog(globalLog)
 	startCtx, startCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -75,7 +100,7 @@ func main() {
 
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		// TUI mode: full-screen bubbletea interface.
-		p := app.NewTUIProgram(runner.Dispatcher(), globalLog, cfg.ListenAddr, cfg.CopilotModel)
+		p := app.NewTUIProgram(runner.Dispatcher(), runner.Dispatcher(), globalLog, cfg.ListenAddr, cfg.CopilotModel)
 		go func() {
 			<-ctx.Done()
 			p.Quit()
