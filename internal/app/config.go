@@ -19,12 +19,13 @@ type Config struct {
 	TrelloAPIToken string
 	CallbackURL    string
 	CopilotModel   string
-	// RouterDir is the directory containing the trello helper scripts
-	// under scripts/ (e.g. trello-get-card-info.ps1,
-	// refresh-copilot-setup.ps1). Entry playbooks no longer live here —
-	// they are loaded from PlaybooksDir and pre-rendered into a
-	// process-temp directory at startup. RouterDir remains because the
-	// scripts still ship alongside the operator's router checkout.
+	// RouterDir is the directory containing legacy trello helper scripts
+	// under scripts/ (e.g. trello-log-event.ps1). Entry playbooks no
+	// longer live here — they are loaded from PlaybooksDir and
+	// pre-rendered into a process-temp directory at startup. The
+	// previous refresh-copilot-setup.ps1 wrapper has been replaced by
+	// the in-process aiassistedrefresh package wired in main.go and is
+	// no longer required for the AzureRM provider work_dir hook.
 	RouterDir string
 	// PlaybooksDir is the directory holding all .md playbook files
 	// (skeleton prompts and entry playbooks). Every .md file under it is

@@ -57,7 +57,7 @@ type CopilotRunner struct {
 	// It replaces the inline os.MkdirAll that used to live in
 	// NewWorkerSession and is the single extension point for "do
 	// something the moment a worker's work_dir is ready" (e.g.
-	// refresh-copilot-setup.ps1, prefetching submodules, ...).
+	// aiassistedrefresh.Service, prefetching submodules, ...).
 	preparer *WorkDirPreparer
 
 	// trelloClient is the project-local SDK wrapper used to expose
@@ -371,7 +371,7 @@ func (r *CopilotRunner) NewWorkerSession(ctx context.Context, cardID string, tra
 	// machines). The preparer creates the directory eagerly (the SDK
 	// rejects a non-existent WorkingDirectory), clones the GitHub repo
 	// when one is attached to the card, and fans out to every registered
-	// WorkDirHook (e.g. refresh-copilot-setup.ps1).
+	// WorkDirHook (e.g. the aiassistedrefresh-backed AzureRM hook).
 	info, err := r.preparer.Prepare(ctx, cardID, bs.classification)
 	if err != nil {
 		return nil, err
