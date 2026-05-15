@@ -169,9 +169,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selectedIdx--
 			}
 		case "a":
-			(&m).dumpSelected()
+			m.dumpSelected()
 		case "d":
-			(&m).openDeleteConfirm()
+			m.openDeleteConfirm()
 		}
 		return m, nil
 	case tuiDeleteResultMsg:

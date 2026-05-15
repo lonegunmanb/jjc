@@ -140,6 +140,25 @@ func New(opts Options) (*Renderer, error) {
 			return nil, fmt.Errorf("prompttmpl: source file %q: %w", name, err)
 		}
 		src := filepath.Join(opts.PlaybooksDir, name)
+		// Reject symlinks: combined with the size cap the renderer is
+		// safe against an oversized .md, but a symlink target like
+		// /dev/zero or /etc/shadow could otherwise let a misconfigured
+		// PlaybooksDir leak host content into a worker prompt or stall
+		// startup. The intent of --playbooks-dir is "real .md files
+		// here, period"; reflect that with an explicit Lstat check.
+		lst, lerr := os.Lstat(src)
+		if lerr != nil {
+			cleanupOnError()
+			return nil, fmt.Errorf("prompttmpl: lstat %q: %w", src, lerr)
+		}
+		if lst.Mode()&os.ModeSymlink != 0 {
+			cleanupOnError()
+			return nil, fmt.Errorf("prompttmpl: source file %q is a symlink (not allowed)", src)
+		}
+		if !lst.Mode().IsRegular() {
+			cleanupOnError()
+			return nil, fmt.Errorf("prompttmpl: source file %q is not a regular file", src)
+		}
 		dst := filepath.Join(tempDir, name)
 		if cerr := copyFile(src, dst); cerr != nil {
 			cleanupOnError()

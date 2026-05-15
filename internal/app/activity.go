@@ -332,22 +332,39 @@ func (t *ActivityTracker) SetWorkDir(dir string) {
 
 // MarkDisconnected forces State=Disconnected without needing an SDK event.
 // Called by the dispatcher after the worker goroutine exits.
+//
+// Resets the per-call lookup maps (toolCallNames / subagentNames). In
+// normal operation each START entry is paired with a COMPLETE that
+// removes the corresponding map key, but a worker killed mid-tool (or
+// a session reaped while a tool call is in flight) never receives the
+// COMPLETE event — without this reset those entries would remain in
+// memory for the lifetime of the tracker, which the GlobalEventLog
+// keeps reachable for the lifetime of the gateway.
 func (t *ActivityTracker) MarkDisconnected() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.status.State = StateDisconnected
+	t.toolCallNames = make(map[string]string)
+	t.subagentNames = make(map[string]string)
 	t.record(time.Now(), "session_shutdown", "", "worker exited", "worker exited")
 }
 
 // MarkSessionIdleReaped records that the session was disconnected due to
 // idle timeout. The worker goroutine remains alive; a new session will be
 // created lazily when the next event arrives.
+//
+// The tool-name lookup maps are reset for the same reason as in
+// MarkDisconnected: the SDK session is gone, so any START entries that
+// had not yet seen their COMPLETE will never get one. A fresh session
+// for this card starts with a clean tool-id namespace anyway.
 func (t *ActivityTracker) MarkSessionIdleReaped() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.status.State = StateDisconnected
 	t.status.CurrentTool = ""
 	t.status.CurrentToolStartedAt = time.Time{}
+	t.toolCallNames = make(map[string]string)
+	t.subagentNames = make(map[string]string)
 	t.record(time.Now(), "session_idle_reaped", "", "idle timeout", "idle timeout")
 }
 

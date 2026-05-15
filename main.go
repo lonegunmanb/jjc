@@ -28,7 +28,11 @@ func main() {
 	// Always redirect logs to a file so stdio is free for the REPL.
 	const logFileName = "trellooperator.log"
 	var logOut = os.Stderr
-	if f, ferr := os.OpenFile(logFileName, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); ferr != nil {
+	// Mode 0o600: the log captures card ids, model output, prompt
+	// previews and timing data. Restrict to the gateway user so a
+	// shared host (or a stray operator) cannot read it without
+	// explicit privilege escalation.
+	if f, ferr := os.OpenFile(logFileName, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); ferr != nil {
 		log.New(os.Stderr, "", log.LstdFlags).Printf("warning: cannot open log file %q (%v); falling back to stderr", logFileName, ferr)
 	} else {
 		logOut = f

@@ -69,6 +69,13 @@ type CopilotRunner struct {
 	dedupSeen   map[string]struct{}
 	dedupOrder  []string
 	dedupMaxLen int
+
+	// auditMu guards lazy creation of the per-process audit directory
+	// that holds the .md copies of every dispatched prompt; the
+	// directory is removed by Stop so audit copies do not pile up
+	// across process restarts.
+	auditMu  sync.Mutex
+	auditDir string
 }
 
 // NewCopilotRunner builds a runner targeting the given Copilot model. Pass
@@ -182,9 +189,13 @@ func (r *CopilotRunner) Start(ctx context.Context) error {
 }
 
 // Stop shuts the dispatcher down (waiting for every per-card worker
-// goroutine to finish) and tears down the underlying SDK client.
+// goroutine to finish) and tears down the underlying SDK client. It
+// also removes the per-process audit directory created by
+// writeAuditCopy; doing it here (rather than in main) keeps the
+// runner's lifecycle self-contained.
 func (r *CopilotRunner) Stop() error {
 	r.dispatcher.Stop()
+	r.removeAuditDir()
 	r.clientMu.Lock()
 	defer r.clientMu.Unlock()
 	return r.stopLocked()
@@ -250,8 +261,18 @@ func (r *CopilotRunner) Handle(ctx context.Context, eventID string, rawBody []by
 
 // writeAuditCopy persists the per-event task prompt to a temp file so
 // operators can inspect what the worker would have seen.
+//
+// The file lives under r.auditDir, which is a per-process directory
+// created on first use and removed by Stop. Without a dedicated dir the
+// per-event audit copies would accumulate under the OS-wide temp dir
+// and never get cleaned up; with one, a single os.RemoveAll on shutdown
+// reclaims everything at once and makes the audit lifecycle explicit.
 func (r *CopilotRunner) writeAuditCopy(eventID, content string) (string, error) {
-	tmp, err := os.CreateTemp(r.tmpDir, "trello-prompt-*.md")
+	dir, err := r.ensureAuditDir()
+	if err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(dir, "trello-prompt-*.md")
 	if err != nil {
 		return "", fmt.Errorf("create temp prompt file: %w", err)
 	}
@@ -270,6 +291,43 @@ func (r *CopilotRunner) writeAuditCopy(eventID, content string) (string, error) 
 	}
 	_ = eventID
 	return abs, nil
+}
+
+// ensureAuditDir lazily creates the per-process directory under
+// r.tmpDir (or the OS temp dir when r.tmpDir is empty) used to hold
+// audit copies of dispatched prompts. Subsequent calls return the
+// already-created path.
+func (r *CopilotRunner) ensureAuditDir() (string, error) {
+	r.auditMu.Lock()
+	defer r.auditMu.Unlock()
+	if r.auditDir != "" {
+		return r.auditDir, nil
+	}
+	dir, err := os.MkdirTemp(r.tmpDir, "openclaw-audit-*")
+	if err != nil {
+		return "", fmt.Errorf("create audit dir: %w", err)
+	}
+	r.auditDir = dir
+	r.logger.Printf("event=audit_dir_created path=%s", dir)
+	return dir, nil
+}
+
+// removeAuditDir best-effort tears down the audit directory. Called
+// from Stop. Errors are logged but never returned — Stop must succeed
+// even if the OS refuses to delete the directory.
+func (r *CopilotRunner) removeAuditDir() {
+	r.auditMu.Lock()
+	dir := r.auditDir
+	r.auditDir = ""
+	r.auditMu.Unlock()
+	if dir == "" {
+		return
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		r.logger.Printf("event=audit_dir_cleanup_failed path=%s err=%v", dir, err)
+		return
+	}
+	r.logger.Printf("event=audit_dir_cleaned path=%s", dir)
 }
 
 // NewWorkerSession implements SessionFactory: it creates a brand-new
@@ -356,8 +414,15 @@ func (r *CopilotRunner) markActionSeen(actionID string) bool {
 	r.dedupSeen[actionID] = struct{}{}
 	r.dedupOrder = append(r.dedupOrder, actionID)
 	if r.dedupMaxLen > 0 && len(r.dedupOrder) > r.dedupMaxLen {
+		// Use copy + truncate instead of `r.dedupOrder = r.dedupOrder[1:]`.
+		// The naive re-slice keeps the underlying array growing
+		// unboundedly: every append after a re-slice reuses the original
+		// backing array up to its capacity, then doubles. copy() shifts
+		// the live elements down so cap stays ~= dedupMaxLen and the
+		// evicted slot is overwritten on the next append.
 		evict := r.dedupOrder[0]
-		r.dedupOrder = r.dedupOrder[1:]
+		copy(r.dedupOrder, r.dedupOrder[1:])
+		r.dedupOrder = r.dedupOrder[:len(r.dedupOrder)-1]
 		delete(r.dedupSeen, evict)
 	}
 	return false
@@ -587,7 +652,7 @@ func buildCardContext(bs workerBootstrap) string {
 // omitted because it is delivered once via the session's
 // SystemMessageConfig.
 func assembleEventPrompt(rawBody, slimBody []byte) string {
-	message := BuildMessage(rawBody)
+	message := BuildPromptSummary(rawBody)
 
 	var b strings.Builder
 	b.WriteString("# TASK\n\n")

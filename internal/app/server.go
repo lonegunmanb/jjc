@@ -104,7 +104,7 @@ func NewRouterWithRunner(dispatchCtx context.Context, cfg Config, runner *Copilo
 		}
 		logger.Printf("event=signature_valid event_id=%s", eventID)
 
-		summary := BuildMessage(raw)
+		summary := BuildLogSummary(raw)
 		logger.Printf("event=trello_summary event_id=%s summary=%q", eventID, summary)
 
 		// Trello requires a 2xx within ~30s or it will retry the webhook,

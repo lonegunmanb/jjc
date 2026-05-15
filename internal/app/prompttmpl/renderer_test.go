@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -261,5 +262,38 @@ func TestRender_RejectsOversizedEmbeddedDefault(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for oversized embedded default")
+	}
+}
+
+// TestRender_RejectsSymlinkSource asserts that a symlink in the
+// PlaybooksDir is refused at New time. Without this guard a malicious
+// or misconfigured deployment could point a `.md` symlink at
+// /dev/zero, /etc/shadow, or any other host file and either stall
+// startup or leak its content into a worker prompt.
+//
+// Skips on Windows where creating a symlink without elevation is not
+// reliable; the underlying os.Lstat / os.ModeSymlink contract is
+// platform-independent so the lint of the check itself is covered by
+// the unix build.
+func TestRender_RejectsSymlinkSource(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires elevated privileges on Windows")
+	}
+	src := t.TempDir()
+	target := filepath.Join(src, "real.md")
+	if err := os.WriteFile(target, []byte("real body\n"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	link := filepath.Join(src, "linked.md")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink not supported on this filesystem: %v", err)
+	}
+
+	_, err := New(Options{PlaybooksDir: src, Logger: discardLogger()})
+	if err == nil {
+		t.Fatal("expected error for symlink in PlaybooksDir")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink-related error, got: %v", err)
 	}
 }
