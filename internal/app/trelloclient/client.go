@@ -27,6 +27,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -157,13 +158,19 @@ func WithLogger(logger *log.Logger) Option {
 
 // New constructs a Client. WithCredentials is required for production
 // use; tests that point WithServer at httptest.NewServer can omit
-// credentials (the SDK skips the auth editor when both are empty).
+// credentials (the SDK skips the auth editor when both are empty). New
+// rejects the "no server, no credentials" combination explicitly so a
+// misconfigured production deployment fails fast at startup instead of
+// silently issuing unauthenticated GETs against api.trello.com.
 func New(opts ...Option) (Client, error) {
 	cfg := &config{logger: log.Default()}
 	for _, opt := range opts {
 		if err := opt(cfg); err != nil {
 			return nil, err
 		}
+	}
+	if cfg.apiKey == "" && cfg.apiToken == "" && cfg.server == "" {
+		return nil, errors.New("trelloclient: production use requires WithCredentials; tests that talk to a stub must call WithServer")
 	}
 	sdkOpts := []trellosdk.Option{
 		trellosdk.WithCredentials(cfg.apiKey, cfg.apiToken),
@@ -303,7 +310,9 @@ func (c *sdkBackedClient) GetLatestComment(ctx context.Context, cardID string) (
 	if cardID == "" {
 		return Comment{}, errors.New("trelloclient: card id is empty")
 	}
-	all, err := c.fetchCommentsPage(ctx, cardID)
+	// Latest only — a single page (newest-first) is enough; no need to
+	// paginate the entire history just to find max(.At).
+	all, err := c.fetchCommentActions(ctx, cardID, false)
 	if err != nil {
 		return Comment{}, err
 	}
@@ -325,7 +334,11 @@ func (c *sdkBackedClient) ListCommentsSince(ctx context.Context, cardID string, 
 	if cardID == "" {
 		return nil, errors.New("trelloclient: card id is empty")
 	}
-	all, err := c.fetchCommentsPage(ctx, cardID)
+	// Pagination matters here: WORKER.md treats this as the canonical
+	// way to recover the full per-card history (every `[agent]:` archive
+	// summary, every standing human instruction). A single page (~50)
+	// would silently truncate long-lived cards.
+	all, err := c.fetchCommentActions(ctx, cardID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -344,41 +357,109 @@ func (c *sdkBackedClient) ListCommentsSince(ctx context.Context, cardID string, 
 	return out, nil
 }
 
-// fetchCommentsPage fetches the first page (up to 50 items, the Trello
-// default) of commentCard actions. Pagination is intentionally not
-// implemented: the gateway only consumes recent comments and a single
-// page covers every realistic per-card volume.
-func (c *sdkBackedClient) fetchCommentsPage(ctx context.Context, cardID string) ([]Comment, error) {
+// commentsPerPage is the maximum page size Trello accepts for the
+// /cards/{id}/actions endpoint (per the API docs; values above 1000 are
+// clamped server-side). The generated SDK does not expose `limit` /
+// `before` on GetCardsIdActionsParams, so fetchCommentActions injects
+// both via a per-call RequestEditorFn.
+const commentsPerPage = 1000
+
+// commentsHardCap caps the total number of comments fetchCommentActions
+// will return. It exists purely as a safety net against a runaway loop
+// or an exotic card with millions of comments. Hitting the cap emits a
+// truncation log line so operators can investigate.
+const commentsHardCap = 5000
+
+// fetchCommentActions fetches commentCard actions on a card. When
+// paginate is false, only the first (newest) page is returned. When
+// true, fetchCommentActions walks back through history using Trello's
+// `before=<actionId>` cursor until either the API returns an empty page
+// or the hard cap is reached. Each page is decoded individually so a
+// single malformed action does not blank the rest of the history.
+func (c *sdkBackedClient) fetchCommentActions(ctx context.Context, cardID string, paginate bool) ([]Comment, error) {
 	filter := "commentCard"
-	resp, err := c.sdk.GetCardsIdActions(ctx, cardID, &trellosdk.GetCardsIdActionsParams{Filter: &filter})
-	if err != nil {
-		return nil, fmt.Errorf("trelloclient: GET /cards/%s/actions: %w", cardID, err)
-	}
-	body, err := readAndCheck(resp, http.StatusOK, "GET /cards/"+cardID+"/actions")
-	if err != nil {
-		return nil, err
-	}
-	var raw []json.RawMessage
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("trelloclient: decode actions for card %s: %w", cardID, err)
-	}
-	out := make([]Comment, 0, len(raw))
-	for _, item := range raw {
-		comment, err := decodeCommentAction(item)
+	var (
+		out    []Comment
+		before string
+	)
+	for {
+		editor := commentsPageEditor(commentsPerPage, before)
+		resp, err := c.sdk.GetCardsIdActions(ctx, cardID,
+			&trellosdk.GetCardsIdActionsParams{Filter: &filter}, editor)
 		if err != nil {
-			// Skip malformed actions but keep going so a single bad row
-			// doesn't blank the whole page.
-			c.logger.Printf("event=trelloclient_action_decode_error card_id=%s err=%v", cardID, err)
-			continue
+			return nil, fmt.Errorf("trelloclient: GET /cards/%s/actions: %w", cardID, err)
 		}
-		out = append(out, comment)
+		body, err := readAndCheck(resp, http.StatusOK, "GET /cards/"+cardID+"/actions")
+		if err != nil {
+			return nil, err
+		}
+		var raw []json.RawMessage
+		if err := json.Unmarshal(body, &raw); err != nil {
+			return nil, fmt.Errorf("trelloclient: decode actions for card %s: %w", cardID, err)
+		}
+		if len(raw) == 0 {
+			return out, nil
+		}
+		var lastID string
+		for _, item := range raw {
+			comment, derr := decodeCommentAction(item)
+			if derr != nil {
+				// Skip malformed actions but keep going so a single bad row
+				// doesn't blank the whole page.
+				c.logger.Printf("event=trelloclient_action_decode_error card_id=%s err=%v", cardID, derr)
+				continue
+			}
+			out = append(out, comment)
+			lastID = comment.ID
+		}
+		if !paginate {
+			return out, nil
+		}
+		if len(out) >= commentsHardCap {
+			c.logger.Printf("event=trelloclient_comments_truncated card_id=%s returned=%d hard_cap=%d hint=increase commentsHardCap or filter with since=",
+				cardID, len(out), commentsHardCap)
+			return out, nil
+		}
+		// If the page came back smaller than the requested limit there
+		// is no more history to walk; stop without one extra empty GET.
+		if len(raw) < commentsPerPage {
+			return out, nil
+		}
+		if lastID == "" {
+			// Every action on the page failed to decode; we can't advance
+			// the cursor. Bail rather than loop forever.
+			c.logger.Printf("event=trelloclient_comments_pagination_stalled card_id=%s", cardID)
+			return out, nil
+		}
+		before = lastID
 	}
-	return out, nil
+}
+
+// commentsPageEditor returns a RequestEditorFn that appends `limit` and
+// (optionally) `before` to the query string. Used because the upstream
+// generated SDK doesn't surface those parameters on
+// GetCardsIdActionsParams even though Trello supports them.
+func commentsPageEditor(limit int, before string) trellosdk.RequestEditorFn {
+	return func(_ context.Context, req *http.Request) error {
+		q := req.URL.Query()
+		q.Set("limit", strconv.Itoa(limit))
+		if before != "" {
+			q.Set("before", before)
+		}
+		req.URL.RawQuery = q.Encode()
+		return nil
+	}
 }
 
 // decodeCommentAction handles both the "single action" envelope returned
 // by POST /cards/{id}/actions/comments and the per-element shape inside
 // the GET /cards/{id}/actions array.
+//
+// A missing or unparseable `date` field is reported as an error so the
+// caller can skip the action rather than silently inserting a
+// zero-valued .At into the result — GetLatestComment uses max(.At) and
+// ListCommentsSince filters by .At, both of which would mis-order or
+// mis-include a zero-time entry.
 func decodeCommentAction(body []byte) (Comment, error) {
 	var raw struct {
 		ID   string `json:"id"`
@@ -396,24 +477,25 @@ func decodeCommentAction(body []byte) (Comment, error) {
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return Comment{}, fmt.Errorf("trelloclient: decode action: %w", err)
 	}
+	if raw.Date == "" {
+		return Comment{}, fmt.Errorf("trelloclient: action %q missing date field", raw.ID)
+	}
+	// Trello returns RFC3339 with optional fractional seconds (e.g.
+	// "2026-05-01T10:00:00.000Z"); time.RFC3339 already accepts that.
+	t, err := time.Parse(time.RFC3339, raw.Date)
+	if err != nil {
+		return Comment{}, fmt.Errorf("trelloclient: action %q has unparseable date %q: %w", raw.ID, raw.Date, err)
+	}
 	c := Comment{
 		ID:       raw.ID,
 		Text:     raw.Data.Text,
 		By:       raw.MemberCreator.FullName,
 		ByID:     raw.MemberCreator.ID,
 		Username: raw.MemberCreator.Username,
+		At:       t,
 	}
 	if c.ByID == "" {
 		c.ByID = raw.IDMemberCreator
-	}
-	if raw.Date != "" {
-		// Trello sends RFC3339 (with millisecond fraction). time.Parse
-		// handles both with and without the fraction.
-		if t, err := time.Parse(time.RFC3339, raw.Date); err == nil {
-			c.At = t
-		} else if t, err := time.Parse("2006-01-02T15:04:05.000Z", raw.Date); err == nil {
-			c.At = t
-		}
 	}
 	return c, nil
 }

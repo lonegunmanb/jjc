@@ -47,19 +47,14 @@ Worker 是你通过专用工具创建的 **子 agent / 子 session**，不是 OS
 | Ready for review | `TRELLO_READY_FOR_REVIEW` |
 | Done | `TRELLO_DONE` |
 
-### 管家会用到的 Trello 入口
+### 管家与 Trello 的交互方式
 
-管家运行在主 session 里，同样能用 gateway 注册的 `trello_*` 工具（同 WORKER.md §2.2 中的表格）。管家只允许调**读序**工具：`trello_card_get`、`trello_card_list`、`trello_board_lists`、`trello_card_latest_comment`、`trello_card_comments_since`。
+管家 session 由运营者在 gateway 进程之外启动（它只拥有 `worker_spawn` / `worker_notify` 这类管家专用工具，gateway **并不**在管家 session 上注册 `trello_*` 工具）。管家本身不要试图直接读 / 写 Trello：
 
-> 管家**不要**调 `trello_card_move` / `trello_card_comment` 等会改卡片状态的工具，那是 worker 的事。
+- **需要读卡片、读评论**：调 `worker_spawn` 创建一个 worker，worker 会看到 gateway 注册的 `trello_card_get` / `trello_card_list` / `trello_board_lists` / `trello_card_latest_comment` / `trello_card_comments_since`等读序工具，代你取数。
+- **需要发评论、移卡片**：worker 本来就会做这些事。管家不要插手。
 
-### 本地脚本（仅限本地日志，非 Trello）
-
-目录：`C:\Users\zjhe\.openclaw\workspace-trello-router\scripts\`
-
-| 脚本 | 用途 | 参数 |
-|------|------|------|
-| `trello-log-event.ps1` | 追加日志到 `events.log`（UTF-8） | `-Fields @{...}` |
+> 以前这里列过一组 `trello-*.ps1` 脚本供管家 exec 调用。这些脚本随 Issue #9 迁移到 Go SDK 后已废弃；gateway 不再依赖 PowerShell 跳 Trello。
 
 ### Worker 生命周期工具（专用子 agent 工具，不走 exec）
 

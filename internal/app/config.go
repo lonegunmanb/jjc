@@ -131,12 +131,14 @@ func (c Config) Redacted() string {
 		redact(c.TrelloSecret), redact(c.TrelloAPIKey), redact(c.TrelloAPIToken))
 }
 
+// redact replaces a sensitive value with a length-only fingerprint so
+// boot-log lines never leak prefix bytes. Trello API keys are 32-char
+// hex; even a 2-char prefix is enough to fingerprint a token across
+// hosts. We deliberately surface only the rune count so operators can
+// still tell "is the env var actually set" from "is it empty".
 func redact(v string) string {
 	if v == "" {
 		return ""
 	}
-	if len(v) <= 4 {
-		return "****"
-	}
-	return v[:2] + "***" + v[len(v)-2:]
+	return fmt.Sprintf("<redacted len=%d>", len(v))
 }
