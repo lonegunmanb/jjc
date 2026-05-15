@@ -273,3 +273,86 @@ func TestAzureRMRefreshHookPropagatesRefresherError(t *testing.T) {
 		t.Fatalf("error chain does not include underlying cause: %v", err)
 	}
 }
+
+// TestAzureRMRefreshHookInvokesRefresherForPRCard is one of the two
+// regression guards for issue #1: the hook must treat a Pull-Request
+// card exactly the same as an Issue card. The hook does not look at
+// Classification.Kind directly, so this is currently true by
+// construction — but pinning it down here means a future maintainer
+// can't reintroduce the historic "first line must be a GitHub issue
+// URL" assumption without breaking this test.
+func TestAzureRMRefreshHookInvokesRefresherForPRCard(t *testing.T) {
+	rec := &refresherRecorder{}
+	hook, err := NewAzureRMRefreshHook(AzureRMRefreshHookOptions{
+		Refresher: rec,
+		Logger:    silentLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewAzureRMRefreshHook: %v", err)
+	}
+
+	dir := t.TempDir()
+	writeGoMod(t, dir, "module github.com/hashicorp/terraform-provider-azurerm\n")
+
+	info := WorkDirInfo{
+		CardID:  "pr-card",
+		WorkDir: dir,
+		Classification: CardClassification{
+			WorkType: WorkTypeProviderAzureRM,
+			Kind:     KindPR, // <-- the critical difference vs. the issue-card test
+			Owner:    "hashicorp",
+			Repo:     "terraform-provider-azurerm",
+			Number:   "12345",
+		},
+	}
+	if err := hook(context.Background(), info); err != nil {
+		t.Fatalf("hook returned error: %v", err)
+	}
+	if rec.callCount() != 1 {
+		t.Fatalf("hook must invoke Refresher exactly once for a PR-kind card, got %d", rec.callCount())
+	}
+	got := rec.latest()
+	if got.RepoDirectory != dir {
+		t.Errorf("RepoDirectory: got %q want %q", got.RepoDirectory, dir)
+	}
+	if got.Issue != "12345" {
+		t.Errorf("Issue: got %q want %q", got.Issue, "12345")
+	}
+}
+
+// TestAzureRMRefreshHookSkipsForNonGitHubReferenceCard is the second
+// regression guard for issue #1: when the card's external reference is
+// a non-GitHub URL (ADO work item, Jira ticket, …) the hook must skip
+// instead of hallucinating an issue number. We drive the unclassified
+// fallback path by leaving Classification empty and supplying a
+// CardInfoFetcher that returns a non-GitHub URL; the in-process
+// ClassifyCard then returns an empty Number and the hook is expected
+// to log the skip and return nil.
+func TestAzureRMRefreshHookSkipsForNonGitHubReferenceCard(t *testing.T) {
+	rec := &refresherRecorder{}
+	fetcher := func(_ context.Context, _ string) (string, error) {
+		// ADO work-item link — looks structurally like a card with an
+		// external reference but it is not a GitHub URL, so the
+		// classifier extracts no Owner/Repo/Number.
+		return "https://dev.azure.com/contoso/widgets/_workitems/edit/42", nil
+	}
+	hook, err := NewAzureRMRefreshHook(AzureRMRefreshHookOptions{
+		Refresher:       rec,
+		CardInfoFetcher: fetcher,
+		Logger:          silentLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewAzureRMRefreshHook: %v", err)
+	}
+
+	dir := t.TempDir()
+	writeGoMod(t, dir, "module github.com/hashicorp/terraform-provider-azurerm\n")
+
+	info := WorkDirInfo{CardID: "ado-card", WorkDir: dir} // no Classification
+	if err := hook(context.Background(), info); err != nil {
+		t.Fatalf("hook should swallow non-GitHub-referenced cards, got %v", err)
+	}
+	if rec.callCount() != 0 {
+		t.Fatalf("hook must not refresh when the card has no GitHub reference, got %d calls", rec.callCount())
+	}
+}
