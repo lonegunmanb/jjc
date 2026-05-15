@@ -5,11 +5,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 
-	copilot "github.com/github/copilot-sdk/go"
+	"github.com/lonegunmanb/trello-copilot/internal/app/aiassistedrefresh"
 )
 
 func writeGoMod(t *testing.T, dir, content string) {
@@ -78,56 +77,46 @@ func TestIsAzureRMProviderModule(t *testing.T) {
 	}
 }
 
-// captureRunSession returns a SessionRunFunc that records every call so
-// tests can assert on what would have been spawned.
-type capturedRun struct {
-	cfg    *copilot.SessionConfig
-	prompt string
-}
-
-type runSessionRecorder struct {
+// refresherRecorder is the test stub for the Refresher interface — it
+// captures every Options the hook passes through and lets tests programme
+// an error reply. It is concurrency-safe so it can be reused across
+// goroutines if a future test needs that.
+type refresherRecorder struct {
 	mu    sync.Mutex
-	calls []capturedRun
+	calls []aiassistedrefresh.Options
 	err   error
 }
 
-func (r *runSessionRecorder) run() SessionRunFunc {
-	return func(ctx context.Context, cfg *copilot.SessionConfig, prompt string) error {
-		r.mu.Lock()
-		r.calls = append(r.calls, capturedRun{cfg: cfg, prompt: prompt})
-		err := r.err
-		r.mu.Unlock()
-		_ = ctx
-		return err
-	}
+func (r *refresherRecorder) Refresh(_ context.Context, opts aiassistedrefresh.Options) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, opts)
+	return r.err
 }
 
-func (r *runSessionRecorder) callCount() int {
+func (r *refresherRecorder) callCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.calls)
 }
 
+func (r *refresherRecorder) latest() aiassistedrefresh.Options {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls[len(r.calls)-1]
+}
+
 func TestNewAzureRMRefreshHookValidatesOptions(t *testing.T) {
-	if _, err := NewAzureRMRefreshHook(AzureRMRefreshHookOptions{
-		ScriptPath: "x",
-	}); err == nil {
-		t.Fatal("expected error when neither Spawner nor RunSession given")
-	}
-	rec := &runSessionRecorder{}
-	if _, err := NewAzureRMRefreshHook(AzureRMRefreshHookOptions{
-		RunSession: rec.run(),
-	}); err == nil {
-		t.Fatal("expected error when ScriptPath empty")
+	if _, err := NewAzureRMRefreshHook(AzureRMRefreshHookOptions{}); err == nil {
+		t.Fatal("expected error when Refresher is nil")
 	}
 }
 
 func TestAzureRMRefreshHookSkipsWhenGoModMissing(t *testing.T) {
-	rec := &runSessionRecorder{}
+	rec := &refresherRecorder{}
 	hook, err := NewAzureRMRefreshHook(AzureRMRefreshHookOptions{
-		RunSession: rec.run(),
-		ScriptPath: `C:\fake\refresh-copilot-setup.ps1`,
-		Logger:     silentLogger(),
+		Refresher: rec,
+		Logger:    silentLogger(),
 	})
 	if err != nil {
 		t.Fatalf("NewAzureRMRefreshHook: %v", err)
@@ -138,16 +127,15 @@ func TestAzureRMRefreshHookSkipsWhenGoModMissing(t *testing.T) {
 		t.Fatalf("hook returned error: %v", err)
 	}
 	if got := rec.callCount(); got != 0 {
-		t.Fatalf("hook should not spawn when go.mod is missing, got %d calls", got)
+		t.Fatalf("hook should not refresh when go.mod is missing, got %d calls", got)
 	}
 }
 
 func TestAzureRMRefreshHookSkipsForOtherModules(t *testing.T) {
-	rec := &runSessionRecorder{}
+	rec := &refresherRecorder{}
 	hook, err := NewAzureRMRefreshHook(AzureRMRefreshHookOptions{
-		RunSession: rec.run(),
-		ScriptPath: `C:\fake\refresh-copilot-setup.ps1`,
-		Logger:     silentLogger(),
+		Refresher: rec,
+		Logger:    silentLogger(),
 	})
 	if err != nil {
 		t.Fatalf("NewAzureRMRefreshHook: %v", err)
@@ -160,17 +148,15 @@ func TestAzureRMRefreshHookSkipsForOtherModules(t *testing.T) {
 		t.Fatalf("hook returned error: %v", err)
 	}
 	if got := rec.callCount(); got != 0 {
-		t.Fatalf("hook should not spawn for non-azurerm provider, got %d calls", got)
+		t.Fatalf("hook should not refresh for non-azurerm provider, got %d calls", got)
 	}
 }
 
-func TestAzureRMRefreshHookSpawnsWithExpectedConfigAndPrompt(t *testing.T) {
-	rec := &runSessionRecorder{}
+func TestAzureRMRefreshHookInvokesRefresherWithExpectedOptions(t *testing.T) {
+	rec := &refresherRecorder{}
 	hook, err := NewAzureRMRefreshHook(AzureRMRefreshHookOptions{
-		RunSession: rec.run(),
-		ScriptPath: `C:\workspace\scripts\refresh-copilot-setup.ps1`,
-		Model:      "stub-model",
-		Logger:     silentLogger(),
+		Refresher: rec,
+		Logger:    silentLogger(),
 	})
 	if err != nil {
 		t.Fatalf("NewAzureRMRefreshHook: %v", err)
@@ -194,70 +180,28 @@ func TestAzureRMRefreshHookSpawnsWithExpectedConfigAndPrompt(t *testing.T) {
 		t.Fatalf("hook returned error: %v", err)
 	}
 	if got := rec.callCount(); got != 1 {
-		t.Fatalf("hook should spawn exactly once for azurerm provider, got %d", got)
+		t.Fatalf("hook should invoke Refresher exactly once for azurerm provider, got %d", got)
 	}
 
-	call := rec.calls[0]
-	if call.cfg == nil {
-		t.Fatal("session config must not be nil")
+	got := rec.latest()
+	if got.RepoDirectory != dir {
+		t.Errorf("RepoDirectory: got %q want %q", got.RepoDirectory, dir)
 	}
-	if call.cfg.Model != "stub-model" {
-		t.Errorf("model: got %q want %q", call.cfg.Model, "stub-model")
+	if got.Issue != "32258" {
+		t.Errorf("Issue: got %q want %q", got.Issue, "32258")
 	}
-	if call.cfg.WorkingDirectory != dir {
-		t.Errorf("WorkingDirectory: got %q want %q", call.cfg.WorkingDirectory, dir)
-	}
-	if call.cfg.SystemMessage == nil || !strings.Contains(call.cfg.SystemMessage.Content, "ephemeral Copilot session") {
-		t.Errorf("system prompt missing expected ephemeral preface: %+v", call.cfg.SystemMessage)
-	}
-
-	// User prompt must reference the refresh script + work_dir + the
-	// pre-resolved issue number, and must not push the LLM into a Trello
-	// REST call.
-	for _, must := range []string{
-		"refresh-copilot-setup.ps1",
-		"69fbf8b2fa478054c540d2d3",
-		dir,
-		"-Issue 32258",
-		"already been done Go-side",
-	} {
-		if !strings.Contains(call.prompt, must) {
-			t.Errorf("user prompt missing %q. prompt=\n%s", must, call.prompt)
-		}
-	}
-	for _, mustNot := range []string{
-		"trello-get-card-info.ps1",
-		"api.trello.com",
-		"<issue_number>",
-	} {
-		if strings.Contains(call.prompt, mustNot) {
-			t.Errorf("prompt must not push session to a Trello REST/script call. found %q in prompt=\n%s", mustNot, call.prompt)
-		}
-	}
-	// Must invoke via pwsh (PowerShell 7+) — refresh-copilot-setup.ps1 relies on
-	// $IsWindows which only exists in 6+. `powershell -NoProfile -File ...`
-	// (Windows PowerShell 5.1) fails with a strict-mode automatic-variable error.
-	if strings.Count(call.prompt, "pwsh -NoProfile -File ") < 1 {
-		t.Errorf("prompt should issue at least one pwsh invocation. prompt=\n%s", call.prompt)
-	}
-	for _, mustNot := range []string{
-		"powershell -NoProfile -File C:",
-		"powershell -NoProfile -File <",
-	} {
-		if strings.Contains(call.prompt, mustNot) {
-			t.Errorf("prompt must use `pwsh`, not legacy `powershell` for invocations. found %q in prompt=\n%s", mustNot, call.prompt)
-		}
+	if got.Clean {
+		t.Errorf("Clean must default to false; got %v", got.Clean)
 	}
 }
 
 func TestAzureRMRefreshHookFallsBackToFetcherWhenClassificationMissing(t *testing.T) {
-	rec := &runSessionRecorder{}
+	rec := &refresherRecorder{}
 	fetcher := func(_ context.Context, _ string) (string, error) {
 		return "https://github.com/hashicorp/terraform-provider-azurerm/issues/4242", nil
 	}
 	hook, err := NewAzureRMRefreshHook(AzureRMRefreshHookOptions{
-		RunSession:      rec.run(),
-		ScriptPath:      `C:\workspace\scripts\refresh-copilot-setup.ps1`,
+		Refresher:       rec,
 		CardInfoFetcher: fetcher,
 		Logger:          silentLogger(),
 	})
@@ -272,19 +216,18 @@ func TestAzureRMRefreshHookFallsBackToFetcherWhenClassificationMissing(t *testin
 		t.Fatalf("hook returned error: %v", err)
 	}
 	if rec.callCount() != 1 {
-		t.Fatalf("expected 1 spawn after fetcher fallback, got %d", rec.callCount())
+		t.Fatalf("expected 1 refresh after fetcher fallback, got %d", rec.callCount())
 	}
-	if !strings.Contains(rec.calls[0].prompt, "-Issue 4242") {
-		t.Errorf("prompt should include fetched issue number; prompt=\n%s", rec.calls[0].prompt)
+	if got := rec.latest(); got.Issue != "4242" {
+		t.Errorf("Issue: got %q want %q", got.Issue, "4242")
 	}
 }
 
 func TestAzureRMRefreshHookSkipsWhenIssueNumberCannotBeResolved(t *testing.T) {
-	rec := &runSessionRecorder{}
+	rec := &refresherRecorder{}
 	hook, err := NewAzureRMRefreshHook(AzureRMRefreshHookOptions{
-		RunSession: rec.run(),
-		ScriptPath: `C:\workspace\scripts\refresh-copilot-setup.ps1`,
-		Logger:     silentLogger(),
+		Refresher: rec,
+		Logger:    silentLogger(),
 	})
 	if err != nil {
 		t.Fatalf("NewAzureRMRefreshHook: %v", err)
@@ -296,16 +239,15 @@ func TestAzureRMRefreshHookSkipsWhenIssueNumberCannotBeResolved(t *testing.T) {
 		t.Fatalf("hook should swallow unresolved-number, got %v", err)
 	}
 	if rec.callCount() != 0 {
-		t.Fatalf("hook must not spawn when issue number is unknown, got %d calls", rec.callCount())
+		t.Fatalf("hook must not refresh when issue number is unknown, got %d calls", rec.callCount())
 	}
 }
 
-func TestAzureRMRefreshHookPropagatesRunSessionError(t *testing.T) {
-	rec := &runSessionRecorder{err: errors.New("boom")}
+func TestAzureRMRefreshHookPropagatesRefresherError(t *testing.T) {
+	rec := &refresherRecorder{err: errors.New("boom")}
 	hook, err := NewAzureRMRefreshHook(AzureRMRefreshHookOptions{
-		RunSession: rec.run(),
-		ScriptPath: `C:\fake\refresh-copilot-setup.ps1`,
-		Logger:     silentLogger(),
+		Refresher: rec,
+		Logger:    silentLogger(),
 	})
 	if err != nil {
 		t.Fatalf("NewAzureRMRefreshHook: %v", err)
@@ -318,26 +260,16 @@ func TestAzureRMRefreshHookPropagatesRunSessionError(t *testing.T) {
 		CardID:  "card",
 		WorkDir: dir,
 		// Pre-populate Classification.Number so the hook proceeds past
-		// the issue-number resolver and actually invokes RunSession;
-		// without a number resolveAzureRMIssueNumber short-circuits.
+		// the issue-number resolver and actually invokes the Refresher.
 		Classification: CardClassification{Number: "9"},
 	}
 	err = hook(context.Background(), info)
 	if err == nil {
-		t.Fatal("expected error to bubble up from RunSession")
+		t.Fatal("expected error to bubble up from Refresher")
 	}
-	if !strings.Contains(err.Error(), "boom") {
+	// The hook wraps the underlying error with fmt.Errorf("…: %w", err),
+	// so errors.Is must still see the recorder's sentinel.
+	if !errors.Is(err, rec.err) {
 		t.Fatalf("error chain does not include underlying cause: %v", err)
-	}
-}
-
-func TestSessionSpawnerBeforeStartFails(t *testing.T) {
-	r := NewCopilotRunner("m", silentLogger())
-	spawner := r.SessionSpawner()
-	if spawner == nil {
-		t.Fatal("SessionSpawner must never return nil")
-	}
-	if _, err := spawner.Spawn(context.Background(), &copilot.SessionConfig{}); err == nil {
-		t.Fatal("spawning before Start must fail")
 	}
 }

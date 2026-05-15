@@ -78,9 +78,24 @@ Leave these alone — they have nothing to do with the playbooks temp dir:
 - External URLs (`https://github.com/...`).
 - Files that live inside the worker's `work_dir` (the cloned repo), e.g.
   `go.mod`, `README.md`, `.github/instructions/*.instructions.md`.
-- Helper scripts (`refresh-copilot-setup.ps1`,
-  `scripts/trello-get-card-info.ps1`).
+- Helper scripts (`scripts/trello-log-event.ps1`).
 - Glob patterns or pure narrative mentions of file names.
+
+> **Deprecation note: `<router-dir>/scripts/refresh-copilot-setup.ps1` is no
+> longer required.** The AzureRM provider work_dir hook used to spawn an
+> ephemeral Copilot session whose only job was to invoke that script via
+> `pwsh -NoProfile -File ...`. As of [#13](https://github.com/lonegunmanb/trello-copilot/issues/13)
+> the gateway ships an in-process `internal/app/aiassistedrefresh`
+> package that clones
+> `WodansSon/terraform-azurerm-ai-assisted-development` and runs the
+> upstream installer directly: `pwsh + install-copilot-setup.ps1` on
+> Windows, `bash + install-copilot-setup.sh` on macOS / Linux. The
+> refresh is synchronous (no LLM turn, no spawned session) and works on
+> any OS where `git` is on `$PATH` and either `pwsh` or `bash` is
+> available. The legacy `refresh-copilot-setup.ps1` file under
+> `<router-dir>/scripts/` is kept for one release for backwards
+> compatibility but is no longer invoked by the gateway and will be
+> removed in a follow-up release.
 
 ---
 

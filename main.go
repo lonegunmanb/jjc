@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/lonegunmanb/trello-copilot/internal/app"
+	"github.com/lonegunmanb/trello-copilot/internal/app/aiassistedrefresh"
 	"github.com/lonegunmanb/trello-copilot/internal/app/prompts"
 	"github.com/lonegunmanb/trello-copilot/internal/app/prompttmpl"
 	"github.com/lonegunmanb/trello-copilot/internal/app/trelloclient"
@@ -87,25 +87,23 @@ func main() {
 
 	// Register the AzureRM provider refresh hook: when the per-card
 	// work_dir turns out to be a clone of hashicorp/terraform-provider-azurerm
-	// (detected by go.mod's first line), spawn an independent Copilot
-	// session that reads the Trello card to find the issue number and runs
-	// refresh-copilot-setup.ps1 against the work_dir. The hook silently
-	// no-ops for any other repo.
-	if cfg.RouterDir != "" {
-		azurermHook, hookErr := app.NewAzureRMRefreshHook(app.AzureRMRefreshHookOptions{
-			Spawner:         runner.SessionSpawner(),
-			ScriptPath:      filepath.Join(cfg.RouterDir, "scripts", "refresh-copilot-setup.ps1"),
-			CardInfoFetcher: app.NewSDKCardInfoFetcher(trelloClient),
-			Model:           cfg.CopilotModel,
-			Logger:          logger,
-		})
-		if hookErr != nil {
-			logger.Printf("event=azurerm_refresh_hook_register_failed err=%v", hookErr)
-		} else {
-			runner.RegisterWorkDirHook(azurermHook)
-			logger.Printf("event=azurerm_refresh_hook_registered script=%s",
-				filepath.Join(cfg.RouterDir, "scripts", "refresh-copilot-setup.ps1"))
-		}
+	// (detected by go.mod's first line), synchronously refresh the
+	// upstream `.github/instructions/` etc. by cloning
+	// WodansSon/terraform-azurerm-ai-assisted-development into a temp dir
+	// and running its installer (pwsh + .ps1 on Windows, bash + .sh on
+	// macOS / Linux — chosen at runtime by aiassistedrefresh based on
+	// GOOS). The hook silently no-ops for any other repo.
+	refresher := aiassistedrefresh.New(aiassistedrefresh.WithLogger(logger))
+	azurermHook, hookErr := app.NewAzureRMRefreshHook(app.AzureRMRefreshHookOptions{
+		Refresher:       refresher,
+		CardInfoFetcher: app.NewSDKCardInfoFetcher(trelloClient),
+		Logger:          logger,
+	})
+	if hookErr != nil {
+		logger.Printf("event=azurerm_refresh_hook_register_failed err=%v", hookErr)
+	} else {
+		runner.RegisterWorkDirHook(azurermHook)
+		logger.Printf("event=azurerm_refresh_hook_registered impl=aiassistedrefresh")
 	}
 
 	globalLog := app.NewGlobalEventLog(128)
