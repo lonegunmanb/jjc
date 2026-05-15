@@ -457,7 +457,7 @@ func assembleDepartureNotice(rawBody, slimBody []byte, listAfter string) string 
 	var b strings.Builder
 	b.WriteString("# TASK\n\n")
 	b.WriteString("The card has moved out of the active lists (Analyze / In action) ")
-	b.WriteString(fmt.Sprintf("and into %q. ", listAfter))
+	fmt.Fprintf(&b, "and into %q. ", listAfter)
 	b.WriteString("Per the worker contract: if you were executing a planned implementation, ")
 	b.WriteString("stop immediately. If you are mid-experiment, you may complete the current ")
 	b.WriteString("experiment to a clean state but do not start any new ones. Make sure all ")

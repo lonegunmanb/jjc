@@ -16,6 +16,18 @@ linters:
     - staticcheck
     - unused
     - misspell
+  settings:
+    errcheck:
+      # These return values are intentionally ignored throughout the
+      # codebase: print failures to a log/REPL writer are not actionable,
+      # and Close on a read-only file or a tracker is purely best-effort.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*os.File).Close
+        - (io.Closer).Close
+        - (*github.com/lonegunmanb/trello-copilot/internal/app/prompttmpl.Renderer).Cleanup
   exclusions:
     paths:
       - tmp
