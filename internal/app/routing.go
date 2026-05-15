@@ -76,6 +76,15 @@ func Route(rawBody []byte) RouteDecision {
 	if cardID == "" {
 		return RouteDecision{Action: RouteDrop, Reason: "no_card_id"}
 	}
+	// Defence in depth: a malformed cardID will eventually reach
+	// filepath.Join(baseDir, cardID) in WorkDirPreparer.Prepare. Reject
+	// it here so the dispatcher never even spawns a worker for an
+	// untrusted id. The webhook is internet-exposed; cardID comes
+	// straight from the Trello payload (which a forged callback could
+	// supply).
+	if !IsValidCardID(cardID) {
+		return RouteDecision{Action: RouteDrop, Reason: "invalid_card_id"}
+	}
 
 	switch actionType {
 	case "updateCard":

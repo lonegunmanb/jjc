@@ -104,12 +104,27 @@ func main() {
 		}
 	}()
 
-	router := app.NewRouter(cfg, runner, logger)
+	// Establish the shutdown context before the router so background
+	// dispatch goroutines spawned by the router inherit it. Cancelling
+	// this context (via SIGINT/SIGTERM or the TUI quitting) cancels
+	// every in-flight dispatch the router started.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	router := app.NewRouter(ctx, cfg, runner, logger)
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
+		// Slow-loris and slow-write defence: cap the time we'll spend
+		// reading a body or writing a response for any one request.
+		// Trello payloads are tiny (<50 KiB) so 15s is generous; keeping
+		// idle keep-alive at 60s caps the count of orphan connections
+		// the runtime will hold on to between events.
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 
 	go func() {
@@ -118,9 +133,6 @@ func main() {
 			logger.Fatalf("event=http_server_error err=%v", err)
 		}
 	}()
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		// TUI mode: full-screen bubbletea interface.

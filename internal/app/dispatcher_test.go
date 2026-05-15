@@ -111,7 +111,7 @@ func TestDispatcherDifferentCardsRunInParallel(t *testing.T) {
 	d := NewDispatcher(log.Default(), factory)
 	defer d.Stop()
 
-	cards := []string{"a", "b", "c", "d"}
+	cards := []string{"aaa", "bbb", "ccc", "ddd"}
 	for _, c := range cards {
 		body := `{"action":{"type":"updateCard","data":{"card":{"id":"` + c + `"},"listAfter":{"name":"Analyze"}}}}`
 		dispatchEvent(t, d, "evt-"+c, body)
@@ -148,7 +148,7 @@ func TestDispatcherSameCardEventsSerialised(t *testing.T) {
 	d := NewDispatcher(log.Default(), factory)
 	defer d.Stop()
 
-	const cardID = "x"
+	const cardID = "card-x"
 	body := `{"action":{"type":"updateCard","data":{"card":{"id":"` + cardID + `"},"listAfter":{"name":"Analyze"}}}}`
 	for i := 0; i < 5; i++ {
 		dispatchEvent(t, d, "evt", body)
@@ -184,7 +184,7 @@ func TestDispatcherDropsUnsupportedEvents(t *testing.T) {
 	defer d.Stop()
 
 	// updateCard without a list move = drop.
-	body := `{"action":{"type":"updateCard","data":{"card":{"id":"c1"}}}}`
+	body := `{"action":{"type":"updateCard","data":{"card":{"id":"card1"}}}}`
 	dispatchEvent(t, d, "evt-1", body)
 
 	// Give the dispatcher a moment to (incorrectly) create a session if it
@@ -205,7 +205,7 @@ func TestDispatcherDepartureWithoutWorkerIsNoop(t *testing.T) {
 
 	// First event for the card is a departure (move to a non-active list).
 	// MANAGER.md rule 1: drop, do NOT spawn a worker.
-	body := `{"action":{"type":"updateCard","data":{"card":{"id":"c1"},"listAfter":{"name":"Ready for review"}}}}`
+	body := `{"action":{"type":"updateCard","data":{"card":{"id":"card1"},"listAfter":{"name":"Ready for review"}}}}`
 	dispatchEvent(t, d, "evt-1", body)
 
 	time.Sleep(50 * time.Millisecond)
@@ -222,7 +222,7 @@ func TestDispatcherTerminateNotifiesAndShutsDownWorker(t *testing.T) {
 	d := NewDispatcher(log.Default(), factory)
 	defer d.Stop()
 
-	const cardID = "y"
+	const cardID = "card-y"
 	dispatch := `{"action":{"type":"updateCard","data":{"card":{"id":"` + cardID + `"},"listAfter":{"name":"Analyze"}}}}`
 	terminate := `{"action":{"type":"updateCard","data":{"card":{"id":"` + cardID + `"},"listAfter":{"name":"Done"}}}}`
 	dispatchEvent(t, d, "evt-go", dispatch)
@@ -262,7 +262,7 @@ func TestDispatcherTerminateWithoutWorkerIsNoop(t *testing.T) {
 	d := NewDispatcher(log.Default(), factory)
 	defer d.Stop()
 
-	body := `{"action":{"type":"deleteCard","data":{"card":{"id":"never-seen"}}}}`
+	body := `{"action":{"type":"deleteCard","data":{"card":{"id":"never-seen-card"}}}}`
 	dispatchEvent(t, d, "evt", body)
 	time.Sleep(50 * time.Millisecond)
 
@@ -278,7 +278,7 @@ func TestDispatcherStopAfterStopReturnsError(t *testing.T) {
 	d := NewDispatcher(log.Default(), factory)
 	d.Stop()
 
-	body := `{"action":{"type":"updateCard","data":{"card":{"id":"c"},"listAfter":{"name":"Analyze"}}}}`
+	body := `{"action":{"type":"updateCard","data":{"card":{"id":"card-c"},"listAfter":{"name":"Analyze"}}}}`
 	err := d.Dispatch(context.Background(), "evt", []byte(body))
 	if !errors.Is(err, ErrDispatcherStopped) {
 		t.Fatalf("expected ErrDispatcherStopped, got %v", err)
@@ -291,7 +291,7 @@ func TestDispatcherSessionCreationFailureDoesNotPanic(t *testing.T) {
 	d := NewDispatcher(log.Default(), factory)
 	defer d.Stop()
 
-	body := `{"action":{"type":"updateCard","data":{"card":{"id":"c"},"listAfter":{"name":"Analyze"}}}}`
+	body := `{"action":{"type":"updateCard","data":{"card":{"id":"card-c"},"listAfter":{"name":"Analyze"}}}}`
 	dispatchEvent(t, d, "evt", body)
 
 	// Worker goroutine should give up on the failed creation and
@@ -299,7 +299,7 @@ func TestDispatcherSessionCreationFailureDoesNotPanic(t *testing.T) {
 	waitFor(t, 2*time.Second, func() bool {
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		_, ok := d.workers["c"]
+		_, ok := d.workers["card-c"]
 		return !ok
 	}, "failed worker to deregister")
 }

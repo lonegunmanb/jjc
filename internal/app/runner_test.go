@@ -35,7 +35,7 @@ func TestRunnerHandleDuplicateActionIsDropped(t *testing.T) {
 	factory := newFakeFactory()
 	r := newStubbedRunner(t, factory)
 
-	body := []byte(`{"action":{"id":"a1","type":"updateCard","data":{"card":{"id":"c"},"listAfter":{"name":"Analyze"}}}}`)
+	body := []byte(`{"action":{"id":"a1","type":"updateCard","data":{"card":{"id":"card-c"},"listAfter":{"name":"Analyze"}}}}`)
 
 	if _, err := r.Handle(context.Background(), "evt-1", body); err != nil {
 		t.Fatalf("first dispatch: %v", err)
@@ -45,7 +45,7 @@ func TestRunnerHandleDuplicateActionIsDropped(t *testing.T) {
 	}
 
 	waitFor(t, time.Second, func() bool {
-		s := factory.get("c")
+		s := factory.get("card-c")
 		if s == nil {
 			return false
 		}
@@ -55,7 +55,7 @@ func TestRunnerHandleDuplicateActionIsDropped(t *testing.T) {
 	}, "first prompt landed")
 	time.Sleep(50 * time.Millisecond)
 
-	s := factory.get("c")
+	s := factory.get("card-c")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.prompts) != 1 {
@@ -162,7 +162,7 @@ func TestAssembleWorkerSystemPromptUsesRenderedSkeletons(t *testing.T) {
 }
 
 func TestAssembleEventPromptHasTaskOnly(t *testing.T) {
-	raw := []byte(`{"action":{"type":"updateCard","data":{"card":{"id":"c1","name":"Card A"}}}}`)
+	raw := []byte(`{"action":{"type":"updateCard","data":{"card":{"id":"card1","name":"Card A"}}}}`)
 	slim, err := slimRawBody(raw)
 	if err != nil {
 		t.Fatalf("slim: %v", err)
