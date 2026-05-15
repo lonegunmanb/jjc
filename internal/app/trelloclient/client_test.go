@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -33,6 +34,9 @@ func newTestServer(t *testing.T, handler http.HandlerFunc) (Client, *httptest.Se
 }
 
 func TestNewRejectsMissingCredentials(t *testing.T) {
+	if _, err := New(); err == nil {
+		t.Fatal("production-shaped New (no credentials, no server) must be rejected")
+	}
 	if _, err := New(WithCredentials("", "tok")); err == nil {
 		t.Fatal("empty key must be rejected")
 	}
@@ -41,6 +45,11 @@ func TestNewRejectsMissingCredentials(t *testing.T) {
 	}
 	if _, err := New(WithCredentials("k", "tok"), WithServer("")); err == nil {
 		t.Fatal("empty server must be rejected")
+	}
+	// Test-shaped: server is set, no credentials — must succeed so
+	// httptest-driven tests can keep running without producing a real key.
+	if _, err := New(WithServer("http://example.invalid")); err != nil {
+		t.Fatalf("test-shaped New (server only) must succeed: %v", err)
 	}
 }
 
@@ -311,6 +320,86 @@ func TestListCommentsSinceSkipsMalformed(t *testing.T) {
 	}
 }
 
+// TestListCommentsSincePaginatesUntilEmpty verifies the wrapper walks
+// back through the action history using `before=<lastID>` until Trello
+// returns an empty page, instead of stopping after the first page (the
+// pre-fix behaviour silently truncated long-lived cards to ~50
+// comments).
+func TestListCommentsSincePaginatesUntilEmpty(t *testing.T) {
+	// Build a fixture of 1500 comments newest-first across two full
+	// pages of `commentsPerPage` (1000) plus a partial third page (500).
+	mkPage := func(start, end int) string {
+		var sb strings.Builder
+		sb.WriteString("[")
+		for i := start; i < end; i++ {
+			if i > start {
+				sb.WriteString(",")
+			}
+			// Use distinct timestamps so sorting and pagination cursor
+			// behaviour are observable.
+			fmt.Fprintf(&sb, `{"id":"a%05d","date":"2026-01-01T00:00:%02dZ","data":{"text":"t"}}`, i, i%60)
+		}
+		sb.WriteString("]")
+		return sb.String()
+	}
+	const total = 1500
+	var receivedBefore []string
+	c, _, done := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		// Capture the `before` cursor each request brought in. Page 1
+		// has no cursor; subsequent pages must carry the last id from
+		// the previous page.
+		receivedBefore = append(receivedBefore, r.URL.Query().Get("before"))
+		// Always assert limit=1000 was injected.
+		if got := r.URL.Query().Get("limit"); got != "1000" {
+			t.Errorf("limit query param: got %q want %q", got, "1000")
+		}
+		page := len(receivedBefore) - 1
+		switch page {
+		case 0:
+			_, _ = w.Write([]byte(mkPage(0, 1000)))
+		case 1:
+			_, _ = w.Write([]byte(mkPage(1000, total)))
+		default:
+			_, _ = w.Write([]byte(`[]`))
+		}
+	})
+	defer done()
+	got, err := c.ListCommentsSince(context.Background(), "c1", time.Time{})
+	if err != nil {
+		t.Fatalf("ListCommentsSince: %v", err)
+	}
+	if len(got) != total {
+		t.Fatalf("expected %d comments after pagination, got %d", total, len(got))
+	}
+	if len(receivedBefore) < 2 {
+		t.Fatalf("expected at least 2 server hits (paginated), got %d", len(receivedBefore))
+	}
+	if receivedBefore[0] != "" {
+		t.Errorf("first request must omit before; got %q", receivedBefore[0])
+	}
+	if receivedBefore[1] != "a00999" {
+		t.Errorf("second request must carry before=last-id-of-page-1; got %q", receivedBefore[1])
+	}
+}
+
+// TestGetLatestCommentDoesNotPaginate confirms the latest-only path
+// only hits the server once; otherwise we would do unbounded work for
+// every webhook.
+func TestGetLatestCommentDoesNotPaginate(t *testing.T) {
+	hits := 0
+	c, _, done := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = w.Write([]byte(`[{"id":"a","date":"2026-05-03T10:00:00.000Z","data":{"text":"newest"}}]`))
+	})
+	defer done()
+	if _, err := c.GetLatestComment(context.Background(), "c1"); err != nil {
+		t.Fatalf("GetLatestComment: %v", err)
+	}
+	if hits != 1 {
+		t.Fatalf("GetLatestComment should hit the API exactly once, got %d", hits)
+	}
+}
+
 func TestFirstNonEmptyLine(t *testing.T) {
 	cases := map[string]string{
 		"":                   "",
@@ -325,10 +414,10 @@ func TestFirstNonEmptyLine(t *testing.T) {
 	}
 }
 
-// TestDecodeCommentActionFallbackTimestamp covers the alternate
-// timestamp shape (no zone offset) that some Trello responses use for
-// commentCard actions.
-func TestDecodeCommentActionFallbackTimestamp(t *testing.T) {
+// TestDecodeCommentActionParsesRFC3339WithFraction confirms
+// time.RFC3339 already accepts the optional millisecond fraction Trello
+// emits, so a decoded comment carries a non-zero timestamp.
+func TestDecodeCommentActionParsesRFC3339WithFraction(t *testing.T) {
 	body := []byte(`{"id":"a","date":"2026-05-04T01:02:03.000Z","data":{"text":"x"},"idMemberCreator":"m1"}`)
 	c, err := decodeCommentAction(body)
 	if err != nil {
@@ -339,6 +428,23 @@ func TestDecodeCommentActionFallbackTimestamp(t *testing.T) {
 	}
 	if c.At.IsZero() {
 		t.Errorf("At should not be zero")
+	}
+}
+
+// TestDecodeCommentActionRejectsMissingDate ensures we never silently
+// emit a zero-time Comment, which would mis-order GetLatestComment and
+// mis-include entries in ListCommentsSince filtering.
+func TestDecodeCommentActionRejectsMissingDate(t *testing.T) {
+	body := []byte(`{"id":"a","data":{"text":"x"}}`)
+	if _, err := decodeCommentAction(body); err == nil {
+		t.Fatal("missing date must surface as an error")
+	}
+}
+
+func TestDecodeCommentActionRejectsBadDate(t *testing.T) {
+	body := []byte(`{"id":"a","date":"not-a-date","data":{"text":"x"}}`)
+	if _, err := decodeCommentAction(body); err == nil {
+		t.Fatal("unparseable date must surface as an error")
 	}
 }
 

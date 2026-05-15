@@ -116,6 +116,40 @@ func TestLoadConfigPlaybooksDirMissing(t *testing.T) {
 	}
 }
 
+// TestRedactedDoesNotLeakPrefix pins the contract that redact() never
+// surfaces any meaningful slice of the underlying secret. A short
+// prefix may look harmless but is enough to fingerprint a Trello API
+// key (32-char hex) across hosts, which is precisely what we want the
+// boot log to NOT expose. We use highly distinct secret values so a
+// failure can only come from redact() itself, not from random byte
+// collisions with the format string.
+func TestRedactedDoesNotLeakPrefix(t *testing.T) {
+	c := Config{
+		ListenAddr:     ":1",
+		TrelloSecret:   "QQQQsecretQQQQ12345678",
+		TrelloAPIKey:   "WWWWapikeyWWWW0123456789abcdef0123456789abcdef",
+		TrelloAPIToken: "EEEEapitokenEEEE9876543210abcdef9876543210",
+		CallbackURL:    "https://example.com/trello",
+		CopilotModel:   "m",
+		RouterDir:      "r",
+		PlaybooksDir:   "p",
+	}
+	out := c.Redacted()
+	for _, secret := range []string{c.TrelloSecret, c.TrelloAPIKey, c.TrelloAPIToken} {
+		// Distinctive 4-byte prefixes / suffixes must not appear
+		// verbatim. 4 bytes is short enough to be "obviously a
+		// fingerprint" but long enough that random collisions with the
+		// format string are statistically negligible.
+		const n = 4
+		if strings.Contains(out, secret[:n]) {
+			t.Errorf("redact leaked %d-byte prefix %q of %q in: %s", n, secret[:n], secret, out)
+		}
+		if strings.Contains(out, secret[len(secret)-n:]) {
+			t.Errorf("redact leaked %d-byte suffix %q of %q in: %s", n, secret[len(secret)-n:], secret, out)
+		}
+	}
+}
+
 // TestRedactedCoversEverySensitiveField fails if a new Config field is
 // added that LOOKS sensitive (name contains "secret" / "token" /
 // "password" / "key" / "api") but does not appear redacted in
