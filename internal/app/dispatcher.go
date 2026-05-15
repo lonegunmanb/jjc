@@ -313,6 +313,15 @@ func (d *Dispatcher) runWorker(handle *workerHandle) {
 			if err != nil {
 				d.logger.Printf("event=worker_session_create_error card_id=%s event_id=%s err=%v",
 					handle.cardID, msg.eventID, err)
+				// Surface the failure to the TUI/REPL global log so an
+				// operator notices something went wrong (the worker
+				// goroutine deregisters via the deferred deregister
+				// below, so a future event for the same card will spawn
+				// a fresh attempt — but without this notification a
+				// silently-failed worker is invisible until the next
+				// event arrives).
+				d.recordGlobal(handle.cardID, "worker_session_create_failed",
+					fmt.Sprintf("event_id=%s err=%v", msg.eventID, err))
 				// Drop this message and any backlog so we don't pile up
 				// failures. Future events for this card will trigger a
 				// fresh worker (and a fresh attempt) once the old handle
@@ -476,7 +485,7 @@ func assembleDepartureNotice(rawBody, slimBody []byte, listAfter string) string 
 	b.WriteString("experiment to a clean state but do not start any new ones. Make sure all ")
 	b.WriteString("provisioned experiment resources are torn down before you idle.\n\n")
 	b.WriteString("## Human-readable summary\n\n")
-	b.WriteString(BuildMessage(rawBody))
+	b.WriteString(BuildPromptSummary(rawBody))
 	b.WriteString("\n\n## Slimmed event payload (JSON)\n\n```json\n")
 	b.Write(slimBody)
 	b.WriteString("\n```\n")
@@ -499,7 +508,7 @@ func assembleTerminateNotice(rawBody, slimBody []byte, reason string) string {
 	b.WriteString("4. Reply with a short summary of what you cleaned up. After this turn, ")
 	b.WriteString("your session will be disconnected.\n\n")
 	b.WriteString("## Human-readable summary\n\n")
-	b.WriteString(BuildMessage(rawBody))
+	b.WriteString(BuildPromptSummary(rawBody))
 	b.WriteString("\n\n## Slimmed event payload (JSON)\n\n```json\n")
 	b.Write(slimBody)
 	b.WriteString("\n```\n")

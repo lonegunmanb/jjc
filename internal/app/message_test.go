@@ -82,3 +82,62 @@ func TestBuildMessageHandlesMissingFields(t *testing.T) {
 		t.Fatal("message should not be empty")
 	}
 }
+
+// TestBuildPromptSummaryNeverEmbedsRawJSON guards against re-introducing
+// the prompt-injection surface that BuildLogSummary intentionally
+// embeds in its raw= fallback. BuildPromptSummary is the only flavour
+// safe to splice into a worker prompt; it must never include raw user
+// content beyond the named fields (cardName / list names / comment
+// text). Adding `raw=...` back to the prompt path defeats slim.go.
+func TestBuildPromptSummaryNeverEmbedsRawJSON(t *testing.T) {
+	// A payload with a custom action type the named branches do not
+	// recognise and a clearly attacker-shaped marker that should not
+	// survive into the summary.
+	const marker = "PROMPT_INJECTION_MARKER_42"
+	raw := mustJSON(t, map[string]any{
+		"action": map[string]any{
+			"type": "addAttachmentToCard", // not a recognised branch
+			"data": map[string]any{
+				"card":  map[string]any{"name": "card", "extra": marker},
+				"board": map[string]any{"name": "board"},
+			},
+			"memberCreator": map[string]any{"fullName": "user"},
+		},
+	})
+	got := BuildPromptSummary(raw)
+	if strings.Contains(got, marker) {
+		t.Fatalf("BuildPromptSummary leaked raw payload (%q in output): %s", marker, got)
+	}
+	if strings.Contains(got, "raw=") {
+		t.Fatalf("BuildPromptSummary still embeds raw= clause: %s", got)
+	}
+	// And it should still report the named fields (so the test is
+	// asserting "minus raw", not "completely empty").
+	for _, want := range []string{"addAttachmentToCard", "card", "board", "user"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("BuildPromptSummary missing field %q: %s", want, got)
+		}
+	}
+}
+
+// TestBuildLogSummaryStillEmbedsRawJSON pins the contract that
+// BuildLogSummary (display-only) DOES embed the raw payload, so the
+// log path is unchanged by the prompt-side hardening above. Reviewers
+// modifying BuildLogSummary should think twice if this test breaks.
+func TestBuildLogSummaryStillEmbedsRawJSON(t *testing.T) {
+	const marker = "LOG_RAW_MARKER_99"
+	raw := mustJSON(t, map[string]any{
+		"action": map[string]any{
+			"type": "addAttachmentToCard",
+			"data": map[string]any{
+				"card":  map[string]any{"name": "c", "extra": marker},
+				"board": map[string]any{"name": "b"},
+			},
+			"memberCreator": map[string]any{"fullName": "u"},
+		},
+	})
+	got := BuildLogSummary(raw)
+	if !strings.Contains(got, marker) {
+		t.Fatalf("BuildLogSummary should still embed raw payload for operator log readability; got: %s", got)
+	}
+}

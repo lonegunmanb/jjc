@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -69,6 +70,66 @@ func TestNewWorkerSessionWithoutClientReturnsError(t *testing.T) {
 		t.Fatal("expected error when client is not started")
 	} else if !strings.Contains(err.Error(), "client not started") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestAuditDirCreatedAndCleanedByStop pins the lifecycle invariant for
+// the per-process audit directory: writeAuditCopy lazily creates one
+// directory under r.tmpDir, every subsequent call reuses it, and
+// CopilotRunner.Stop removes it (so audit-copy files do not pile up
+// under the OS temp dir for the lifetime of the host).
+func TestAuditDirCreatedAndCleanedByStop(t *testing.T) {
+	r := NewCopilotRunner("model", log.Default())
+	r.tmpDir = t.TempDir()
+
+	p1, err := r.writeAuditCopy("evt-1", "first prompt")
+	if err != nil {
+		t.Fatalf("writeAuditCopy 1: %v", err)
+	}
+	p2, err := r.writeAuditCopy("evt-2", "second prompt")
+	if err != nil {
+		t.Fatalf("writeAuditCopy 2: %v", err)
+	}
+	if filepath.Dir(p1) != filepath.Dir(p2) {
+		t.Fatalf("audit copies should share a directory; got %q and %q",
+			filepath.Dir(p1), filepath.Dir(p2))
+	}
+	auditDir := filepath.Dir(p1)
+	if _, err := os.Stat(auditDir); err != nil {
+		t.Fatalf("audit dir should exist before Stop: %v", err)
+	}
+
+	if err := r.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if _, err := os.Stat(auditDir); !os.IsNotExist(err) {
+		t.Fatalf("audit dir should be removed by Stop, stat err=%v", err)
+	}
+}
+
+// TestMarkActionSeenRingDoesNotGrowUnbounded asserts that the
+// dedupOrder ring stays at ~dedupMaxLen capacity after many evictions.
+// Without the copy-and-truncate fix the slice's underlying array
+// doubled forever; cap should now stabilise close to dedupMaxLen.
+func TestMarkActionSeenRingDoesNotGrowUnbounded(t *testing.T) {
+	r := NewCopilotRunner("model", log.Default())
+	r.dedupMaxLen = 8
+
+	for i := 0; i < 1000; i++ {
+		r.markActionSeen(fmt.Sprintf("action-%d", i))
+	}
+
+	if got := len(r.dedupOrder); got != r.dedupMaxLen {
+		t.Fatalf("dedupOrder len = %d, want %d", got, r.dedupMaxLen)
+	}
+	// cap is allowed to be slightly larger than dedupMaxLen because of
+	// the initial append, but it must not grow with iteration count.
+	if cap(r.dedupOrder) > r.dedupMaxLen*4 {
+		t.Fatalf("dedupOrder backing array growing unboundedly: cap=%d (max=%d)",
+			cap(r.dedupOrder), r.dedupMaxLen)
+	}
+	if got := len(r.dedupSeen); got != r.dedupMaxLen {
+		t.Fatalf("dedupSeen size = %d, want %d", got, r.dedupMaxLen)
 	}
 }
 
