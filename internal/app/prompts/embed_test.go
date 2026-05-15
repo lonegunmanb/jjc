@@ -42,3 +42,20 @@ func TestResolveWorkerFallsBackToEmbedded(t *testing.T) {
 		t.Fatal("expected ResolveWorker to return embedded content when no override exists")
 	}
 }
+
+func TestDefaultsCoversFiveSkeletonPrompts(t *testing.T) {
+	d := Defaults()
+	want := []string{"BOOTSTRAP.md", "IDENTITY.md", "WORKER.md", "TOOLS.md", "USER.md"}
+	for _, name := range want {
+		body, ok := d[name]
+		if !ok {
+			t.Fatalf("Defaults() missing %s", name)
+		}
+		if strings.TrimSpace(body) == "" {
+			t.Fatalf("Defaults()[%s] is empty", name)
+		}
+	}
+	if len(d) != len(want) {
+		t.Fatalf("expected %d entries, got %d (%v)", len(want), len(d), d)
+	}
+}

@@ -15,6 +15,7 @@ import (
 	copilot "github.com/github/copilot-sdk/go"
 
 	"github.com/lonegunmanb/trello-copilot/internal/app/prompts"
+	"github.com/lonegunmanb/trello-copilot/internal/app/prompttmpl"
 )
 
 // DefaultCopilotModel is the model used when none is configured.
@@ -41,6 +42,14 @@ type CopilotRunner struct {
 	// per the legacy WORKER.md §0 bootstrap procedure.
 	routerDir       string
 	cardInfoFetcher CardInfoFetcher
+
+	// playbooks is the per-process pre-rendered playbook directory. When
+	// non-nil it supplies the skeleton prompts (BOOTSTRAP / IDENTITY /
+	// WORKER / TOOLS / USER) and any per-work_type entry playbook
+	// referenced by EntryPlaybookFilename. When nil, the runner falls
+	// back to the //go:embed snapshots in internal/app/prompts (so
+	// historic call sites and tests keep working).
+	playbooks *prompttmpl.Renderer
 
 	// preparer turns a card classification into a ready-to-use per-card
 	// work_dir (mkdir + optional git clone) and runs registered hooks.
@@ -144,6 +153,13 @@ func (r *CopilotRunner) SetRouterDir(dir string) { r.routerDir = dir }
 // WORKER.md §0 fallback). Must be called before the first
 // NewWorkerSession invocation.
 func (r *CopilotRunner) SetCardInfoFetcher(f CardInfoFetcher) { r.cardInfoFetcher = f }
+
+// SetPlaybooks installs the pre-rendered playbook directory used to
+// build worker system prompts and look up per-work_type entry
+// playbooks. Pass nil to fall back to the embedded skeleton prompts
+// (used by tests that don't need a real PlaybooksDir). Must be called
+// before the first NewWorkerSession invocation.
+func (r *CopilotRunner) SetPlaybooks(p *prompttmpl.Renderer) { r.playbooks = p }
 
 // Start initialises the underlying Copilot SDK client. It is safe to call
 // multiple times; subsequent calls are no-ops once the client is running.
@@ -272,7 +288,7 @@ func (r *CopilotRunner) NewWorkerSession(ctx context.Context, cardID string, tra
 	if tracker != nil {
 		tracker.SetClassification(bs.classification)
 	}
-	systemPrompt := assembleWorkerSystemPrompt(cardID, bs)
+	systemPrompt := assembleWorkerSystemPrompt(cardID, bs, r.playbooks)
 	r.logger.Printf("event=worker_session_create_attempt card_id=%s model=%s system_bytes=%d",
 		cardID, r.model, len(systemPrompt))
 
@@ -401,6 +417,28 @@ func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) wo
 		return bs
 	}
 	bs.playbookFilename = playbook
+
+	// Prefer the pre-rendered copy in the playbooks temp dir (where any
+	// `{{<basename>}}` cross-references have already been substituted to
+	// absolute paths). Fall back to the legacy <router-dir>/<playbook>
+	// path so operators that run without --playbooks-dir wired up still
+	// get an entry playbook (just without template substitution).
+	if r.playbooks != nil {
+		if path, ok := r.playbooks.Path(playbook); ok {
+			content, rerr := r.playbooks.Read(playbook)
+			if rerr != nil {
+				r.logger.Printf("event=worker_bootstrap_playbook_read_failed card_id=%s path=%s err=%v",
+					cardID, path, rerr)
+				return bs
+			}
+			bs.playbookPath = path
+			bs.playbookContent = content
+			r.logger.Printf("event=worker_bootstrap_ready card_id=%s work_type=%s kind=%s playbook=%s playbook_bytes=%d source=playbooks_tempdir",
+				cardID, bs.classification.WorkType, bs.classification.Kind, playbook, len(content))
+			return bs
+		}
+	}
+
 	playbookPath := filepath.Join(r.routerDir, playbook)
 	content, rerr := os.ReadFile(playbookPath)
 	if rerr != nil {
@@ -410,7 +448,7 @@ func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) wo
 	}
 	bs.playbookPath = playbookPath
 	bs.playbookContent = string(content)
-	r.logger.Printf("event=worker_bootstrap_ready card_id=%s work_type=%s kind=%s playbook=%s playbook_bytes=%d",
+	r.logger.Printf("event=worker_bootstrap_ready card_id=%s work_type=%s kind=%s playbook=%s playbook_bytes=%d source=router_dir",
 		cardID, bs.classification.WorkType, bs.classification.Kind, playbook, len(content))
 	return bs
 }
@@ -429,22 +467,60 @@ type workerBootstrap struct {
 }
 
 // assembleWorkerSystemPrompt builds the per-card worker system prompt:
-// the embedded BOOTSTRAP / IDENTITY / WORKER / TOOLS / USER sections
+// the rendered BOOTSTRAP / IDENTITY / WORKER / TOOLS / USER sections
 // (with per-card metadata appended at the very end so it overrides any
-// generic guidance in the base files).
-func assembleWorkerSystemPrompt(cardID string, bs workerBootstrap) string {
-	worker, override := prompts.ResolveWorker()
+// generic guidance in the base files). When playbooks is non-nil the
+// section bodies come from the per-process pre-rendered temp directory
+// (so any `{{<basename>}}` cross-references have already been
+// substituted to absolute paths); otherwise the //go:embed snapshots in
+// internal/app/prompts are used unchanged.
+func assembleWorkerSystemPrompt(cardID string, bs workerBootstrap, playbooks *prompttmpl.Renderer) string {
+	bootstrap, identity, worker, tools, user, override := loadSkeletonPrompts(playbooks)
 	var b strings.Builder
 	if override != "" {
 		fmt.Fprintf(&b, "<!-- WORKER.md overridden from %s -->\n", override)
 	}
-	writeSection(&b, "BOOTSTRAP", prompts.Bootstrap)
-	writeSection(&b, "IDENTITY", prompts.Identity)
+	writeSection(&b, "BOOTSTRAP", bootstrap)
+	writeSection(&b, "IDENTITY", identity)
 	writeSection(&b, "WORKER", worker)
-	writeSection(&b, "TOOLS", prompts.Tools)
-	writeSection(&b, "USER", prompts.User)
+	writeSection(&b, "TOOLS", tools)
+	writeSection(&b, "USER", user)
 	writeSection(&b, "CARD CONTEXT", buildCardContext(bs))
 	return b.String()
+}
+
+// loadSkeletonPrompts returns the five skeleton prompt bodies in
+// declaration order, plus a non-empty override path when WORKER.md was
+// supplied by the user (for the audit comment at the top of the
+// rendered system prompt).
+func loadSkeletonPrompts(playbooks *prompttmpl.Renderer) (bootstrap, identity, worker, tools, user, override string) {
+	if playbooks == nil {
+		w, src := prompts.ResolveWorker()
+		return prompts.Bootstrap, prompts.Identity, w, prompts.Tools, prompts.User, src
+	}
+	bootstrap = readSkeleton(playbooks, "BOOTSTRAP.md", prompts.Bootstrap)
+	identity = readSkeleton(playbooks, "IDENTITY.md", prompts.Identity)
+	worker = readSkeleton(playbooks, "WORKER.md", prompts.EmbeddedWorker())
+	tools = readSkeleton(playbooks, "TOOLS.md", prompts.Tools)
+	user = readSkeleton(playbooks, "USER.md", prompts.User)
+	if path, ok := playbooks.Path("WORKER.md"); ok {
+		override = path
+	}
+	return
+}
+
+// readSkeleton fetches one rendered skeleton from the playbooks dir and
+// falls back to the supplied embedded copy on any I/O error so a
+// transient read failure can never produce a half-empty system prompt.
+func readSkeleton(playbooks *prompttmpl.Renderer, name, fallback string) string {
+	if playbooks == nil {
+		return fallback
+	}
+	body, err := playbooks.Read(name)
+	if err != nil {
+		return fallback
+	}
+	return body
 }
 
 func buildCardContext(bs workerBootstrap) string {

@@ -15,6 +15,8 @@ import (
 	"golang.org/x/term"
 
 	"github.com/lonegunmanb/trello-copilot/internal/app"
+	"github.com/lonegunmanb/trello-copilot/internal/app/prompts"
+	"github.com/lonegunmanb/trello-copilot/internal/app/prompttmpl"
 )
 
 func main() {
@@ -39,9 +41,31 @@ func main() {
 	logger.Printf("event=gateway_starting %s log_file=%q", cfg.Redacted(), logFileName)
 	fmt.Fprintf(os.Stdout, "trello-gateway: logging to %s\n", logFileName)
 
+	// Pre-render every playbook .md file in cfg.PlaybooksDir into a
+	// per-process temp directory; substitute every `{{<basename>}}`
+	// reference inside those files with the absolute path of that
+	// playbook in the same temp directory. Skeleton prompts shipped with
+	// the binary (BOOTSTRAP / IDENTITY / WORKER / TOOLS / USER) are
+	// written first, so any user file with the same basename overrides
+	// the embedded copy.
+	renderer, err := prompttmpl.New(prompttmpl.Options{
+		PlaybooksDir:     cfg.PlaybooksDir,
+		EmbeddedDefaults: prompts.Defaults(),
+		Logger:           logger,
+	})
+	if err != nil {
+		logger.Fatalf("event=playbooks_dir_invalid err=%v", err)
+	}
+	defer func() {
+		if err := renderer.Cleanup(); err != nil {
+			logger.Printf("event=playbooks_tempdir_cleanup_failed err=%v", err)
+		}
+	}()
+
 	runner := app.NewCopilotRunner(cfg.CopilotModel, logger)
 	runner.SetRouterDir(cfg.RouterDir)
 	runner.SetCardInfoFetcher(app.NewScriptCardInfoFetcher(cfg.RouterDir))
+	runner.SetPlaybooks(renderer)
 
 	// Register the AzureRM provider refresh hook: when the per-card
 	// work_dir turns out to be a clone of hashicorp/terraform-provider-azurerm
