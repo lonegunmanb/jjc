@@ -228,3 +228,38 @@ func TestRender_FilesReturnsSortedBasenames(t *testing.T) {
 		t.Fatalf("unexpected files (want sorted [a.md b.md]): %v", files)
 	}
 }
+
+// TestRender_RejectsOversizedSourceFile asserts that a single playbook
+// larger than MaxPlaybookFileBytes causes New to fail and clean up.
+func TestRender_RejectsOversizedSourceFile(t *testing.T) {
+	src := t.TempDir()
+	// MaxPlaybookFileBytes + 1 byte of payload triggers the cap.
+	huge := strings.Repeat("A", int(MaxPlaybookFileBytes)+1)
+	writeFile(t, src, "huge.md", huge)
+
+	_, err := New(Options{PlaybooksDir: src, Logger: discardLogger()})
+	if err == nil {
+		t.Fatal("expected error for oversized source playbook")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected size-related error, got: %v", err)
+	}
+}
+
+// TestRender_RejectsOversizedEmbeddedDefault asserts that an embedded
+// default content larger than MaxPlaybookFileBytes is rejected at New
+// time so a future buggy embed cannot ship past the size invariant.
+func TestRender_RejectsOversizedEmbeddedDefault(t *testing.T) {
+	src := t.TempDir()
+	writeFile(t, src, "ok.md", "ok\n")
+	huge := strings.Repeat("X", int(MaxPlaybookFileBytes)+1)
+
+	_, err := New(Options{
+		PlaybooksDir:     src,
+		EmbeddedDefaults: map[string]string{"BIG.md": huge},
+		Logger:           discardLogger(),
+	})
+	if err == nil {
+		t.Fatal("expected error for oversized embedded default")
+	}
+}

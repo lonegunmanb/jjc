@@ -360,9 +360,22 @@ func (d *Dispatcher) deregister(cardID string) {
 	d.recordGlobal(cardID, "worker_deregistered", "")
 }
 
-// Stop closes all per-card inboxes and waits for every worker goroutine to
-// finish processing its current message and disconnect. New Dispatch calls
-// after Stop return ErrDispatcherStopped.
+// Stop signals every per-card worker to exit and waits for each
+// goroutine to disconnect cleanly. New Dispatch calls after Stop return
+// ErrDispatcherStopped.
+//
+// Lifecycle invariant: only the per-card runWorker goroutine is allowed
+// to touch its own inbox channel beyond enqueueing. Stop closes each
+// worker's `kill` channel, which makes:
+//
+//   - any in-flight enqueue racing with Stop fall into the `<-kill` branch
+//     of its `select` and return ErrWorkerDeleted instead of panicking on
+//     a send to a closed channel; and
+//   - the worker goroutine wake from its inbox/idle-timer select, return,
+//     and disconnect the session.
+//
+// We deliberately do NOT close the inbox channel from here — doing so
+// would race with concurrent enqueues and panic.
 func (d *Dispatcher) Stop() {
 	d.mu.Lock()
 	if d.stopped {
@@ -377,7 +390,7 @@ func (d *Dispatcher) Stop() {
 	d.mu.Unlock()
 
 	for _, h := range handles {
-		close(h.inbox)
+		close(h.kill)
 	}
 	for _, h := range handles {
 		<-h.done
@@ -557,32 +570,46 @@ func (w *copilotWorkerSession) Disconnect() error {
 // Snapshot returns the worker status + recent activity for a card. ok=false
 // if no worker is registered for that card.
 func (d *Dispatcher) Snapshot(cardID string) (WorkerStatus, []ActivityEntry, bool) {
-d.mu.Lock()
-h, ok := d.workers[cardID]
-d.mu.Unlock()
-if !ok {
-return WorkerStatus{}, nil, false
-}
-st, entries := h.tracker.Snapshot()
-st.InboxDepth = len(h.inbox)
-return st, entries, true
+	d.mu.Lock()
+	h, ok := d.workers[cardID]
+	if !ok {
+		d.mu.Unlock()
+		return WorkerStatus{}, nil, false
+	}
+	// Read the inbox depth while still holding d.mu so a concurrent
+	// DeleteWorker / Stop cannot close the channel beneath us. The
+	// tracker.Snapshot call also runs under the lock for the same
+	// reason: it touches activity-log state that DeleteWorker tears
+	// down via tracker.Close once the worker goroutine returns.
+	depth := len(h.inbox)
+	tracker := h.tracker
+	d.mu.Unlock()
+
+	st, entries := tracker.Snapshot()
+	st.InboxDepth = depth
+	return st, entries, true
 }
 
 // ListCards returns a snapshot of every currently-registered worker's
 // status (without the activity ring). Sorted by card_id for stable output.
 func (d *Dispatcher) ListCards() []WorkerStatus {
-d.mu.Lock()
-handles := make([]*workerHandle, 0, len(d.workers))
-for _, h := range d.workers {
-handles = append(handles, h)
-}
-d.mu.Unlock()
-out := make([]WorkerStatus, 0, len(handles))
-for _, h := range handles {
-st, _ := h.tracker.Snapshot()
-st.InboxDepth = len(h.inbox)
-out = append(out, st)
-}
-sort.Slice(out, func(i, j int) bool { return out[i].CardID < out[j].CardID })
-return out
+	type sample struct {
+		tracker *ActivityTracker
+		depth   int
+	}
+	d.mu.Lock()
+	samples := make([]sample, 0, len(d.workers))
+	for _, h := range d.workers {
+		samples = append(samples, sample{tracker: h.tracker, depth: len(h.inbox)})
+	}
+	d.mu.Unlock()
+
+	out := make([]WorkerStatus, 0, len(samples))
+	for _, s := range samples {
+		st, _ := s.tracker.Snapshot()
+		st.InboxDepth = s.depth
+		out = append(out, st)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CardID < out[j].CardID })
+	return out
 }

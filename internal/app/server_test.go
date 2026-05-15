@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/base64"
@@ -44,7 +45,7 @@ func newStubbedRunner(t *testing.T, factory SessionFactory) *CopilotRunner {
 
 func TestHeadReturns200(t *testing.T) {
 	cfg := Config{ListenAddr: ":0", TrelloSecret: "secret", CallbackURL: "https://example.com/trello", CopilotModel: "stub"}
-	r := NewRouterWithRunner(cfg, newStubbedRunner(t, newFakeFactory()), log.Default())
+	r := NewRouterWithRunner(context.Background(), cfg, newStubbedRunner(t, newFakeFactory()), log.Default())
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodHead, "/", nil)
@@ -57,7 +58,7 @@ func TestHeadReturns200(t *testing.T) {
 func TestPostRejectsBadSignature403(t *testing.T) {
 	cfg := Config{ListenAddr: ":0", TrelloSecret: "secret", CallbackURL: "https://example.com/trello", CopilotModel: "stub"}
 	factory := newFakeFactory()
-	r := NewRouterWithRunner(cfg, newStubbedRunner(t, factory), log.Default())
+	r := NewRouterWithRunner(context.Background(), cfg, newStubbedRunner(t, factory), log.Default())
 
 	body := payload(t, map[string]any{"action": map[string]any{"type": "updateCard"}})
 	rr := httptest.NewRecorder()
@@ -79,7 +80,7 @@ func TestPostRejectsBadSignature403(t *testing.T) {
 func TestPostValidSignatureDispatchesEvent(t *testing.T) {
 	cfg := Config{ListenAddr: ":0", TrelloSecret: "secret", CallbackURL: "https://example.com/trello", CopilotModel: "stub"}
 	factory := newFakeFactory()
-	r := NewRouterWithRunner(cfg, newStubbedRunner(t, factory), log.Default())
+	r := NewRouterWithRunner(context.Background(), cfg, newStubbedRunner(t, factory), log.Default())
 
 	body := payload(t, map[string]any{
 		"action": map[string]any{
@@ -130,7 +131,7 @@ func TestPostReturns202EvenWhenSessionCreationFails(t *testing.T) {
 	factory := newFakeFactory()
 	factory.createErr = errExec
 	runner := newStubbedRunner(t, factory)
-	r := NewRouterWithRunner(cfg, runner, log.Default())
+	r := NewRouterWithRunner(context.Background(), cfg, runner, log.Default())
 
 	body := payload(t, map[string]any{
 		"action": map[string]any{
@@ -154,7 +155,7 @@ func TestPostReturns202EvenWhenSessionCreationFails(t *testing.T) {
 
 func TestMethodNotAllowed(t *testing.T) {
 	cfg := Config{ListenAddr: ":0", TrelloSecret: "secret", CallbackURL: "https://example.com/trello", CopilotModel: "stub"}
-	r := NewRouterWithRunner(cfg, newStubbedRunner(t, newFakeFactory()), log.Default())
+	r := NewRouterWithRunner(context.Background(), cfg, newStubbedRunner(t, newFakeFactory()), log.Default())
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -162,6 +163,44 @@ func TestMethodNotAllowed(t *testing.T) {
 
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", rr.Code)
+	}
+}
+
+// TestPostRejectsOversizedBodyByContentLength asserts that a request whose
+// declared Content-Length exceeds MaxWebhookBodyBytes is rejected before
+// any body bytes are read into memory.
+func TestPostRejectsOversizedBodyByContentLength(t *testing.T) {
+	cfg := Config{ListenAddr: ":0", TrelloSecret: "secret", CallbackURL: "https://example.com/trello", CopilotModel: "stub"}
+	r := NewRouterWithRunner(context.Background(), cfg, newStubbedRunner(t, newFakeFactory()), log.Default())
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte("{}")))
+	// Lie about Content-Length to simulate a large declared payload.
+	req.ContentLength = MaxWebhookBodyBytes + 1
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 for oversize Content-Length, got %d", rr.Code)
+	}
+}
+
+// TestPostRejectsOversizedBodyByStreaming asserts that a request whose
+// declared Content-Length is small (or absent) but whose actual body
+// exceeds the cap still gets a 413 — MaxBytesReader catches it.
+func TestPostRejectsOversizedBodyByStreaming(t *testing.T) {
+	cfg := Config{ListenAddr: ":0", TrelloSecret: "secret", CallbackURL: "https://example.com/trello", CopilotModel: "stub"}
+	r := NewRouterWithRunner(context.Background(), cfg, newStubbedRunner(t, newFakeFactory()), log.Default())
+
+	body := bytes.Repeat([]byte("A"), int(MaxWebhookBodyBytes)+1024)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	// Force unknown Content-Length so the early-exit path is bypassed
+	// and MaxBytesReader has to do the work.
+	req.ContentLength = -1
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 for streaming-detected oversize body, got %d", rr.Code)
 	}
 }
 
@@ -173,9 +212,9 @@ func TestEventsForDifferentCardsRunInParallel(t *testing.T) {
 	factory := newFakeFactory()
 	factory.delay = 80 * time.Millisecond
 	runner := newStubbedRunner(t, factory)
-	r := NewRouterWithRunner(cfg, runner, log.Default())
+	r := NewRouterWithRunner(context.Background(), cfg, runner, log.Default())
 
-	cards := []string{"c1", "c2", "c3", "c4"}
+	cards := []string{"card1", "card2", "card3", "card4"}
 	var wg sync.WaitGroup
 	started := time.Now()
 	for _, c := range cards {
@@ -227,7 +266,7 @@ func TestEventsForSameCardAreSerialised(t *testing.T) {
 	factory := newFakeFactory()
 	factory.delay = 30 * time.Millisecond
 	runner := newStubbedRunner(t, factory)
-	r := NewRouterWithRunner(cfg, runner, log.Default())
+	r := NewRouterWithRunner(context.Background(), cfg, runner, log.Default())
 
 	body := payload(t, map[string]any{"action": map[string]any{
 		"type": "updateCard",
@@ -274,7 +313,7 @@ func TestDuplicateActionIDsAreDeduped(t *testing.T) {
 	cfg := Config{ListenAddr: ":0", TrelloSecret: "secret", CallbackURL: "https://example.com/trello", CopilotModel: "stub"}
 	factory := newFakeFactory()
 	runner := newStubbedRunner(t, factory)
-	r := NewRouterWithRunner(cfg, runner, log.Default())
+	r := NewRouterWithRunner(context.Background(), cfg, runner, log.Default())
 
 	body := payload(t, map[string]any{"action": map[string]any{
 		"id":   "act-dup-1",

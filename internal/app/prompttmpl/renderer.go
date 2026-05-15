@@ -106,6 +106,11 @@ func New(opts Options) (*Renderer, error) {
 			cleanupOnError()
 			return nil, fmt.Errorf("prompttmpl: embedded default %q: %w", name, err)
 		}
+		if int64(len(content)) > MaxPlaybookFileBytes {
+			cleanupOnError()
+			return nil, fmt.Errorf("prompttmpl: embedded default %q exceeds %d bytes",
+				name, MaxPlaybookFileBytes)
+		}
 		dst := filepath.Join(tempDir, name)
 		if werr := os.WriteFile(dst, []byte(content), 0o644); werr != nil {
 			cleanupOnError()
@@ -206,6 +211,13 @@ func (r *Renderer) Cleanup() error {
 	return nil
 }
 
+// MaxRenderedFileBytes is the per-file ceiling on rendered output.
+// Substitution can grow a file when `{{X.md}}` references resolve to
+// long absolute paths; this cap keeps a pathological playbook (or a
+// tempdir on a deeply-nested path) from producing arbitrarily large
+// rendered output. Generous relative to MaxPlaybookFileBytes.
+const MaxRenderedFileBytes int64 = 4 << 20
+
 // renderFile reads the file at path, substitutes every `{{<basename>}}`
 // occurrence with the absolute path of <basename> in r.dir, and writes
 // the result back. Any reference whose target is missing or whose name
@@ -222,6 +234,12 @@ func (r *Renderer) renderFile(name, path string) error {
 		r.logger.Printf("event=playbook_render_failed file=%s line=%d column=%d reference=%q reason=%s",
 			name, rerr.Line, rerr.Column, rerr.Reference, rerr.Reason)
 		return rerr
+	}
+	if int64(len(rendered)) > MaxRenderedFileBytes {
+		r.logger.Printf("event=playbook_render_failed file=%s reason=rendered_size_exceeded size=%d limit=%d",
+			name, len(rendered), MaxRenderedFileBytes)
+		return fmt.Errorf("prompttmpl: rendered %q is %d bytes, exceeds %d",
+			name, len(rendered), MaxRenderedFileBytes)
 	}
 	if err := os.WriteFile(path, rendered, 0o644); err != nil {
 		return fmt.Errorf("prompttmpl: write rendered %q: %w", path, err)
@@ -331,6 +349,15 @@ func renderBytes(src []byte, file string, files map[string]string) ([]byte, *Ren
 // validateBasename rejects empty names, names containing path separators
 // (`/`, `\`), and `..` (anywhere) so a playbook reference cannot escape
 // the temp directory.
+// MaxPlaybookFileBytes caps the size of any single source playbook the
+// renderer is willing to copy into the temp dir. The limit also bounds
+// the size of every rendered file (it can only grow if a `{{...}}`
+// expansion adds a path string, which is at most a few hundred bytes).
+// 1 MiB comfortably fits the largest playbook in the repo today
+// (~85 KiB) while preventing an accidental or malicious multi-GiB file
+// from exhausting disk and memory.
+const MaxPlaybookFileBytes int64 = 1 << 20
+
 func validateBasename(name string) error {
 	if name == "" {
 		return errors.New("empty name")
@@ -344,6 +371,10 @@ func validateBasename(name string) error {
 	return nil
 }
 
+// copyFile copies src to dst, refusing to write more than
+// MaxPlaybookFileBytes. Returns an error if the source exceeds the cap
+// (the partial output file is left in place — the caller cleans up the
+// whole temp dir on any error).
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -354,9 +385,17 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	// CopyN(..., max+1) lets us detect "exactly one byte past the cap"
+	// versus "smaller than the cap". A short read (n <= max) plus
+	// io.EOF is the success path.
+	n, copyErr := io.CopyN(out, in, MaxPlaybookFileBytes+1)
+	if copyErr != nil && copyErr != io.EOF {
 		_ = out.Close()
-		return err
+		return copyErr
+	}
+	if n > MaxPlaybookFileBytes {
+		_ = out.Close()
+		return fmt.Errorf("playbook %q exceeds %d bytes", src, MaxPlaybookFileBytes)
 	}
 	return out.Close()
 }

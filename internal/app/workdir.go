@@ -192,6 +192,14 @@ func (p *WorkDirPreparer) Prepare(ctx context.Context, cardID string, c CardClas
 	if cardID == "" {
 		return WorkDirInfo{}, errors.New("prepare workdir: empty card id")
 	}
+	// Final guard before cardID is filepath.Joined. Route already drops
+	// invalid ids, but Prepare is also called from tests and from any
+	// future codepath that doesn't go through Route, so we re-check
+	// here. A bad id at this point is a programmer error, not a routing
+	// decision — return an error rather than a routing-style "drop".
+	if err := ValidateCardID(cardID); err != nil {
+		return WorkDirInfo{}, fmt.Errorf("prepare workdir: %w", err)
+	}
 
 	workDir := filepath.Join(p.baseDir, cardID)
 	info := WorkDirInfo{

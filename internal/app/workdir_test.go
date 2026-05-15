@@ -311,13 +311,13 @@ func TestRegisterWorkDirHookOnRunner(t *testing.T) {
 	var fired bool
 	r.RegisterWorkDirHook(func(_ context.Context, info WorkDirInfo) error {
 		fired = true
-		if info.CardID != "x" {
+		if info.CardID != "card-x" {
 			t.Errorf("hook saw wrong card id %q", info.CardID)
 		}
 		return nil
 	})
 
-	if _, err := r.preparer.Prepare(context.Background(), "x", CardClassification{}); err != nil {
+	if _, err := r.preparer.Prepare(context.Background(), "card-x", CardClassification{}); err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
 	if !fired {
