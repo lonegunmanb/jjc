@@ -23,6 +23,8 @@ func setupPlaybooksDir(t *testing.T) string {
 func TestLoadConfigFromEnv(t *testing.T) {
 	t.Setenv("LISTEN_ADDR", ":9090")
 	t.Setenv("TRELLO_API_SECRET", "env-secret")
+	t.Setenv("TRELLO_API_KEY", "env-key")
+	t.Setenv("TRELLO_API_TOKEN", "env-token")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("COPILOT_MODEL", "env-model")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
@@ -38,6 +40,9 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	if cfg.TrelloSecret != "env-secret" {
 		t.Fatalf("unexpected secret: %s", cfg.TrelloSecret)
 	}
+	if cfg.TrelloAPIKey != "env-key" || cfg.TrelloAPIToken != "env-token" {
+		t.Fatalf("unexpected key/token: %q/%q", cfg.TrelloAPIKey, cfg.TrelloAPIToken)
+	}
 	if cfg.CallbackURL != "https://env.example.com/trello" {
 		t.Fatalf("unexpected callback: %s", cfg.CallbackURL)
 	}
@@ -49,6 +54,8 @@ func TestLoadConfigFromEnv(t *testing.T) {
 func TestLoadConfigFlagOverridesEnv(t *testing.T) {
 	t.Setenv("LISTEN_ADDR", ":9090")
 	t.Setenv("TRELLO_API_SECRET", "env-secret")
+	t.Setenv("TRELLO_API_KEY", "env-key")
+	t.Setenv("TRELLO_API_TOKEN", "env-token")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("COPILOT_MODEL", "env-model")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
@@ -78,6 +85,8 @@ func TestLoadConfigMissingRequired(t *testing.T) {
 
 func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("TRELLO_API_SECRET", "env-secret")
+	t.Setenv("TRELLO_API_KEY", "env-key")
+	t.Setenv("TRELLO_API_TOKEN", "env-token")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
 
@@ -96,6 +105,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 
 func TestLoadConfigPlaybooksDirMissing(t *testing.T) {
 	t.Setenv("TRELLO_API_SECRET", "env-secret")
+	t.Setenv("TRELLO_API_KEY", "env-key")
+	t.Setenv("TRELLO_API_TOKEN", "env-token")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", filepath.Join(t.TempDir(), "does-not-exist"))
 
@@ -114,12 +125,14 @@ func TestLoadConfigPlaybooksDirMissing(t *testing.T) {
 // reviewer sign-off in the PR description).
 func TestRedactedCoversEverySensitiveField(t *testing.T) {
 	c := Config{
-		ListenAddr:   ":1",
-		TrelloSecret: "trellosecretvalue",
-		CallbackURL:  "url",
-		CopilotModel: "model",
-		RouterDir:    "router",
-		PlaybooksDir: "playbooks",
+		ListenAddr:     ":1",
+		TrelloSecret:   "trellosecretvalue",
+		TrelloAPIKey:   "trelloapikeyvalue",
+		TrelloAPIToken: "trelloapitokenvalue",
+		CallbackURL:    "url",
+		CopilotModel:   "model",
+		RouterDir:      "router",
+		PlaybooksDir:   "playbooks",
 	}
 	out := c.Redacted()
 
@@ -162,12 +175,14 @@ func TestRedactedCoversEverySensitiveField(t *testing.T) {
 // deliberate choice.
 func TestRedactedMentionsEveryNonSensitiveField(t *testing.T) {
 	c := Config{
-		ListenAddr:   ":REDACTED_TEST_LISTEN",
-		TrelloSecret: "REDACTED_TEST_SECRET",
-		CallbackURL:  "REDACTED_TEST_URL",
-		CopilotModel: "REDACTED_TEST_MODEL",
-		RouterDir:    "REDACTED_TEST_ROUTER",
-		PlaybooksDir: "REDACTED_TEST_PLAYBOOKS",
+		ListenAddr:     ":REDACTED_TEST_LISTEN",
+		TrelloSecret:   "REDACTED_TEST_SECRET",
+		TrelloAPIKey:   "REDACTED_TEST_KEY",
+		TrelloAPIToken: "REDACTED_TEST_TOKEN",
+		CallbackURL:    "REDACTED_TEST_URL",
+		CopilotModel:   "REDACTED_TEST_MODEL",
+		RouterDir:      "REDACTED_TEST_ROUTER",
+		PlaybooksDir:   "REDACTED_TEST_PLAYBOOKS",
 	}
 	out := c.Redacted()
 	sensitive := []string{"secret", "token", "password", "api"}

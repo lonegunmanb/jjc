@@ -38,11 +38,13 @@ type AzureRMRefreshHookOptions struct {
 	// Required.
 	ScriptPath string
 
-	// CardInfoScriptPath is the absolute path of trello-get-card-info.ps1.
-	// Optional; when empty the user prompt asks the LLM to derive the
-	// path itself, which is fragile — pass it explicitly when wiring from
-	// main.go.
-	CardInfoScriptPath string
+	// CardInfoFetcher resolves the Trello issue number when the gateway
+	// has not already classified the card (i.e. info.Classification.Number
+	// is empty). Optional: when nil, an unclassified card causes the hook
+	// to skip with a logged warning rather than spawn a session that
+	// cannot proceed. Production wiring passes a SDK-backed fetcher so the
+	// hook never has to shell out to PowerShell to talk to Trello.
+	CardInfoFetcher CardInfoFetcher
 
 	// Model selects the Copilot model for the refresh session. Defaults
 	// to DefaultCopilotModel.
@@ -66,15 +68,16 @@ type SessionRunFunc func(ctx context.Context, cfg *copilot.SessionConfig, prompt
 // NewAzureRMRefreshHook returns a WorkDirHook that runs only when the
 // per-card work_dir contains a clone of hashicorp/terraform-provider-azurerm
 // (detected by go.mod's first non-empty line). When that is the case it
-// spawns an independent, single-purpose Copilot session and asks it to:
-//
-//  1. read the Trello card whose id == work_dir folder name (info.CardID)
-//     using trello-get-card-info.ps1,
-//  2. extract the integer issue number from the firstLine GitHub URL,
-//  3. run refresh-copilot-setup.ps1 <work_dir> -Issue <issue_number>.
+// resolves the GitHub issue number Go-side (preferring the gateway's own
+// classification, falling back to a SDK-backed CardInfoFetcher when one
+// is configured) and spawns an independent, single-purpose Copilot
+// session whose only job is to invoke
+// refresh-copilot-setup.ps1 <work_dir> -Issue <issue_number>.
 //
 // The session is intentionally minimal: no WORKER.md, no entry playbook,
-// no orchestration role. It runs once and disconnects.
+// no orchestration role, and crucially no Trello traffic — every Trello
+// call has already been made by the Go-side wiring before the prompt is
+// built. It runs once and disconnects.
 //
 // Detection failure (missing or unreadable go.mod) is reported as an
 // error so the gateway can log it; a clean "this is not the azurerm
@@ -123,8 +126,15 @@ func NewAzureRMRefreshHook(opts AzureRMRefreshHookOptions) (WorkDirHook, error) 
 			defer cancel()
 		}
 
+		issueNumber, resolveErr := resolveAzureRMIssueNumber(sessCtx, info, opts.CardInfoFetcher, logger)
+		if resolveErr != nil {
+			logger.Printf("event=azurerm_refresh_hook_skip card_id=%s work_dir=%s reason=issue_number_unresolved err=%v",
+				info.CardID, info.WorkDir, resolveErr)
+			return nil
+		}
+
 		systemPrompt := buildAzureRMRefreshSystemPrompt(info.CardID, info.WorkDir, opts.ScriptPath)
-		userPrompt := buildAzureRMRefreshUserPrompt(info.CardID, info.WorkDir, opts.ScriptPath, opts.CardInfoScriptPath)
+		userPrompt := buildAzureRMRefreshUserPrompt(info.CardID, info.WorkDir, opts.ScriptPath, issueNumber)
 
 		cfg := &copilot.SessionConfig{
 			Model:               model,
@@ -212,41 +222,58 @@ func buildAzureRMRefreshSystemPrompt(cardID, workDir, scriptPath string) string 
 	return b.String()
 }
 
-func buildAzureRMRefreshUserPrompt(cardID, workDir, scriptPath, cardInfoScriptPath string) string {
+func buildAzureRMRefreshUserPrompt(cardID, workDir, scriptPath, issueNumber string) string {
 	var b strings.Builder
 	b.WriteString("# TASK\n\n")
-	b.WriteString("Run the following two PowerShell invocations and then end your turn.\n\n")
+	fmt.Fprintf(&b, "Run the following PowerShell invocation exactly once and then end your turn. ")
+	fmt.Fprintf(&b, "The Trello card lookup and issue-number extraction have already been done ")
+	fmt.Fprintf(&b, "Go-side: card_id=%s issue_number=%s.\n\n", cardID, issueNumber)
+
 	b.WriteString("> **Use `pwsh` (PowerShell 7+), NOT `powershell` (Windows PowerShell 5.1).** ")
 	b.WriteString("`refresh-copilot-setup.ps1` relies on automatic variables like `$IsWindows` that ")
 	b.WriteString("only exist in PowerShell 7+; invoking via `powershell -NoProfile -File ...` will ")
 	b.WriteString("fail with `The variable '$IsWindows' cannot be retrieved because it has not been set`. ")
-	b.WriteString("Stick to `pwsh -NoProfile -File ...` for both steps below.\n\n")
+	b.WriteString("Stick to `pwsh -NoProfile -File ...`.\n\n")
 
-	b.WriteString("## Step 1 — read the Trello card to find the issue number\n\n")
-	b.WriteString("The work_dir folder name is the Trello card id. Call:\n\n")
+	b.WriteString("## Run refresh-copilot-setup.ps1\n\n")
 	b.WriteString("```powershell\n")
-	if cardInfoScriptPath != "" {
-		fmt.Fprintf(&b, "pwsh -NoProfile -File %s -CardId %s\n", cardInfoScriptPath, cardID)
-	} else {
-		fmt.Fprintf(&b, "pwsh -NoProfile -File <absolute path to trello-get-card-info.ps1> -CardId %s\n", cardID)
-	}
-	b.WriteString("```\n\n")
-	b.WriteString("The script returns JSON with a `firstLine` field containing a GitHub URL of the ")
-	b.WriteString("form `https://github.com/{owner}/{repo}/issues/{number}` (or `pull/{number}`). ")
-	b.WriteString("Extract the integer `{number}` and remember it as `<issue_number>`.\n\n")
-
-	b.WriteString("## Step 2 — run refresh-copilot-setup.ps1\n\n")
-	b.WriteString("Invoke the refresh script using the issue number you extracted:\n\n")
-	b.WriteString("```powershell\n")
-	fmt.Fprintf(&b, "pwsh -NoProfile -File %s %s -Issue <issue_number>\n", scriptPath, workDir)
+	fmt.Fprintf(&b, "pwsh -NoProfile -File %s %s -Issue %s\n", scriptPath, workDir, issueNumber)
 	b.WriteString("```\n\n")
 
 	b.WriteString("## Stop conditions\n\n")
-	b.WriteString("- If the card lookup or the refresh script fails, summarize the failure in your ")
-	b.WriteString("final assistant message and stop. Do NOT retry indefinitely. Do NOT invent a ")
-	b.WriteString("fallback issue number.\n")
-	b.WriteString("- Do NOT post Trello comments, do NOT move the card, do NOT touch git. The per-card worker handles all of that.\n")
+	b.WriteString("- If the refresh script fails, summarize the failure in your final assistant ")
+	b.WriteString("message and stop. Do NOT retry indefinitely.\n")
+	b.WriteString("- Do NOT call the Trello REST API or any Trello-helper PowerShell script; the gateway already ")
+	b.WriteString("resolved the issue number and embedded it above.\n")
+	b.WriteString("- Do NOT post Trello comments, do NOT move the card, do NOT touch git. The ")
+	b.WriteString("per-card worker handles all of that.\n")
 	return b.String()
+}
+
+// resolveAzureRMIssueNumber finds the integer GitHub issue/PR number
+// associated with info.CardID. It prefers the gateway's own
+// classification (already populated by classifyForWorker before the
+// hook fires) and only falls back to a Trello fetch when the
+// classification is missing — keeping the hook synchronous and
+// PowerShell-free in the common case.
+func resolveAzureRMIssueNumber(ctx context.Context, info WorkDirInfo, fetcher CardInfoFetcher, logger *log.Logger) (string, error) {
+	if n := strings.TrimSpace(info.Classification.Number); n != "" {
+		return n, nil
+	}
+	if fetcher == nil {
+		return "", errors.New("no classification.Number and no CardInfoFetcher configured")
+	}
+	text, err := fetcher(ctx, info.CardID)
+	if err != nil {
+		return "", fmt.Errorf("fetch card info: %w", err)
+	}
+	cls := ClassifyCard(text)
+	if n := strings.TrimSpace(cls.Number); n != "" {
+		return n, nil
+	}
+	logger.Printf("event=azurerm_refresh_hook_classify_no_number card_id=%s text_bytes=%d",
+		info.CardID, len(text))
+	return "", errors.New("could not extract issue number from card description")
 }
 
 // refreshSessionSendAndWait mirrors copilotWorkerSession.SendAndWait but

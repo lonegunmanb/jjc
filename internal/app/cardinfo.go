@@ -2,12 +2,11 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
-	"path/filepath"
 	"strings"
+
+	"github.com/lonegunmanb/trello-copilot/internal/app/trelloclient"
 )
 
 // CardInfoFetcher returns text from a Trello card that ClassifyCard can
@@ -21,49 +20,36 @@ import (
 // goroutines.
 type CardInfoFetcher func(ctx context.Context, cardID string) (cardText string, err error)
 
-// trelloCardInfo mirrors the JSON shape produced by
-// scripts/trello-get-card-info.ps1 in the workspace-trello-router repo.
-type trelloCardInfo struct {
-	Name      string `json:"name"`
-	Desc      string `json:"desc"`
-	FirstLine string `json:"firstLine"`
-}
-
-// NewScriptCardInfoFetcher returns a CardInfoFetcher that shells out to
-// trello-get-card-info.ps1 under <routerDir>/scripts/. The returned
-// fetcher inherits TRELLO_API_KEY / TRELLO_API_TOKEN from the gateway
-// process environment (the script needs them to call api.trello.com).
-func NewScriptCardInfoFetcher(routerDir string) CardInfoFetcher {
-	scriptPath := filepath.Join(routerDir, "scripts", "trello-get-card-info.ps1")
+// NewSDKCardInfoFetcher returns a CardInfoFetcher backed by the
+// project-local Trello SDK wrapper. It replaces the previous
+// PowerShell/script implementation: every call hits api.trello.com
+// directly via the in-process HTTP client, so the gateway no longer
+// has to fork pwsh.exe (and no longer requires PowerShell on the host).
+//
+// The returned text concatenates name + firstLine + desc — same shape
+// the script-based fetcher used to produce — so ClassifyCard's regex
+// finds the GitHub URL whether it sits in the title, on the first
+// description line, or further down the body.
+func NewSDKCardInfoFetcher(c trelloclient.Client) CardInfoFetcher {
+	if c == nil {
+		// Refuse to construct a fetcher that can never succeed: callers
+		// would be silently fed empty strings, defeating ClassifyCard.
+		return func(context.Context, string) (string, error) {
+			return "", errors.New("trelloclient is nil")
+		}
+	}
 	return func(ctx context.Context, cardID string) (string, error) {
 		if cardID == "" {
 			return "", errors.New("cardID is empty")
 		}
-		// Use pwsh.exe explicitly: PowerShell 7+ is the supported runtime for
-		// the workspace-trello-router scripts. -NoProfile keeps invocation
-		// cheap and predictable across operator machines.
-		cmd := exec.CommandContext(ctx, "pwsh.exe",
-			"-NoProfile", "-NonInteractive", "-File", scriptPath, "-CardId", cardID)
-		out, err := cmd.Output()
+		card, err := c.GetCard(ctx, cardID)
 		if err != nil {
-			var ee *exec.ExitError
-			if errors.As(err, &ee) {
-				return "", fmt.Errorf("trello-get-card-info.ps1 failed (exit %d): %s",
-					ee.ExitCode(), strings.TrimSpace(string(ee.Stderr)))
-			}
-			return "", fmt.Errorf("invoke trello-get-card-info.ps1: %w", err)
+			return "", fmt.Errorf("fetch trello card %s: %w", cardID, err)
 		}
-		var info trelloCardInfo
-		if err := json.Unmarshal(out, &info); err != nil {
-			return "", fmt.Errorf("parse trello-get-card-info.ps1 output: %w (output=%q)", err, string(out))
-		}
-		// Return name + firstLine + full desc so ClassifyCard's regex finds a
-		// GitHub URL regardless of whether it sits on the first line, in the
-		// title, or further down the description.
 		parts := []string{
-			strings.TrimSpace(info.Name),
-			strings.TrimSpace(info.FirstLine),
-			strings.TrimSpace(info.Desc),
+			strings.TrimSpace(card.Name),
+			strings.TrimSpace(card.FirstLine),
+			strings.TrimSpace(card.Desc),
 		}
 		return strings.TrimSpace(strings.Join(parts, "\n")), nil
 	}

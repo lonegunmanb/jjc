@@ -16,6 +16,7 @@ import (
 
 	"github.com/lonegunmanb/trello-copilot/internal/app/prompts"
 	"github.com/lonegunmanb/trello-copilot/internal/app/prompttmpl"
+	"github.com/lonegunmanb/trello-copilot/internal/app/trelloclient"
 )
 
 // DefaultCopilotModel is the model used when none is configured.
@@ -58,6 +59,13 @@ type CopilotRunner struct {
 	// something the moment a worker's work_dir is ready" (e.g.
 	// refresh-copilot-setup.ps1, prefetching submodules, ...).
 	preparer *WorkDirPreparer
+
+	// trelloClient is the project-local SDK wrapper used to expose
+	// `trello_*` tools on every worker session and to back any other
+	// in-process Trello traffic the gateway needs (e.g. classifier
+	// fallback in the AzureRM refresh hook). Nil is allowed — unit tests
+	// that don't need real Trello traffic skip wiring it.
+	trelloClient trelloclient.Client
 
 	clientMu sync.Mutex
 	client   *copilot.Client
@@ -167,6 +175,13 @@ func (r *CopilotRunner) SetCardInfoFetcher(f CardInfoFetcher) { r.cardInfoFetche
 // (used by tests that don't need a real PlaybooksDir). Must be called
 // before the first NewWorkerSession invocation.
 func (r *CopilotRunner) SetPlaybooks(p *prompttmpl.Renderer) { r.playbooks = p }
+
+// SetTrelloClient installs the SDK-backed Trello wrapper used to
+// expose `trello_*` tools on every worker session. Passing nil leaves
+// worker sessions without those tools — used by unit tests that don't
+// need to talk to Trello. Must be called before the first
+// NewWorkerSession invocation.
+func (r *CopilotRunner) SetTrelloClient(c trelloclient.Client) { r.trelloClient = c }
 
 // Start initialises the underlying Copilot SDK client. It is safe to call
 // multiple times; subsequent calls are no-ops once the client is running.
@@ -381,6 +396,7 @@ func (r *CopilotRunner) NewWorkerSession(ctx context.Context, cardID string, tra
 			Mode:    "append",
 			Content: systemPrompt,
 		},
+		Tools: BuildTrelloTools(r.trelloClient, r.logger),
 	}
 
 	start := time.Now()

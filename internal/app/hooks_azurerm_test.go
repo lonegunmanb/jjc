@@ -167,11 +167,10 @@ func TestAzureRMRefreshHookSkipsForOtherModules(t *testing.T) {
 func TestAzureRMRefreshHookSpawnsWithExpectedConfigAndPrompt(t *testing.T) {
 	rec := &runSessionRecorder{}
 	hook, err := NewAzureRMRefreshHook(AzureRMRefreshHookOptions{
-		RunSession:         rec.run(),
-		ScriptPath:         `C:\workspace\scripts\refresh-copilot-setup.ps1`,
-		CardInfoScriptPath: `C:\workspace\scripts\trello-get-card-info.ps1`,
-		Model:              "stub-model",
-		Logger:             silentLogger(),
+		RunSession: rec.run(),
+		ScriptPath: `C:\workspace\scripts\refresh-copilot-setup.ps1`,
+		Model:      "stub-model",
+		Logger:     silentLogger(),
 	})
 	if err != nil {
 		t.Fatalf("NewAzureRMRefreshHook: %v", err)
@@ -212,32 +211,35 @@ func TestAzureRMRefreshHookSpawnsWithExpectedConfigAndPrompt(t *testing.T) {
 		t.Errorf("system prompt missing expected ephemeral preface: %+v", call.cfg.SystemMessage)
 	}
 
-	// User prompt must reference both scripts and the card id.
+	// User prompt must reference the refresh script + work_dir + the
+	// pre-resolved issue number, and must not push the LLM into a Trello
+	// REST call.
 	for _, must := range []string{
-		"trello-get-card-info.ps1",
 		"refresh-copilot-setup.ps1",
 		"69fbf8b2fa478054c540d2d3",
 		dir,
+		"-Issue 32258",
+		"already been done Go-side",
 	} {
 		if !strings.Contains(call.prompt, must) {
 			t.Errorf("user prompt missing %q. prompt=\n%s", must, call.prompt)
 		}
 	}
-	// Must not invent a hard-coded issue number; LLM derives it.
-	if strings.Contains(call.prompt, "-Issue 32258") {
-		t.Errorf("prompt must not embed pre-classified issue number; LLM derives from card. prompt=\n%s", call.prompt)
+	for _, mustNot := range []string{
+		"trello-get-card-info.ps1",
+		"api.trello.com",
+		"<issue_number>",
+	} {
+		if strings.Contains(call.prompt, mustNot) {
+			t.Errorf("prompt must not push session to a Trello REST/script call. found %q in prompt=\n%s", mustNot, call.prompt)
+		}
 	}
 	// Must invoke via pwsh (PowerShell 7+) — refresh-copilot-setup.ps1 relies on
 	// $IsWindows which only exists in 6+. `powershell -NoProfile -File ...`
 	// (Windows PowerShell 5.1) fails with a strict-mode automatic-variable error.
-	// Count actual *invocations* (looks like `<exe> -NoProfile -File <path>`),
-	// not mentions inside explanatory prose.
-	if strings.Count(call.prompt, "pwsh -NoProfile -File ") < 2 {
-		t.Errorf("prompt should issue at least 2 pwsh invocations (card-info + refresh). prompt=\n%s", call.prompt)
+	if strings.Count(call.prompt, "pwsh -NoProfile -File ") < 1 {
+		t.Errorf("prompt should issue at least one pwsh invocation. prompt=\n%s", call.prompt)
 	}
-	// Allow `powershell` to appear in prose (e.g. fence language tag, warning
-	// text), but not as the executable in either fenced invocation. The two
-	// invocation lines must start with `pwsh `.
 	for _, mustNot := range []string{
 		"powershell -NoProfile -File C:",
 		"powershell -NoProfile -File <",
@@ -245,6 +247,56 @@ func TestAzureRMRefreshHookSpawnsWithExpectedConfigAndPrompt(t *testing.T) {
 		if strings.Contains(call.prompt, mustNot) {
 			t.Errorf("prompt must use `pwsh`, not legacy `powershell` for invocations. found %q in prompt=\n%s", mustNot, call.prompt)
 		}
+	}
+}
+
+func TestAzureRMRefreshHookFallsBackToFetcherWhenClassificationMissing(t *testing.T) {
+	rec := &runSessionRecorder{}
+	fetcher := func(_ context.Context, _ string) (string, error) {
+		return "https://github.com/hashicorp/terraform-provider-azurerm/issues/4242", nil
+	}
+	hook, err := NewAzureRMRefreshHook(AzureRMRefreshHookOptions{
+		RunSession:      rec.run(),
+		ScriptPath:      `C:\workspace\scripts\refresh-copilot-setup.ps1`,
+		CardInfoFetcher: fetcher,
+		Logger:          silentLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewAzureRMRefreshHook: %v", err)
+	}
+	dir := t.TempDir()
+	writeGoMod(t, dir, "module github.com/hashicorp/terraform-provider-azurerm\n")
+
+	info := WorkDirInfo{CardID: "card-x", WorkDir: dir} // no Classification
+	if err := hook(context.Background(), info); err != nil {
+		t.Fatalf("hook returned error: %v", err)
+	}
+	if rec.callCount() != 1 {
+		t.Fatalf("expected 1 spawn after fetcher fallback, got %d", rec.callCount())
+	}
+	if !strings.Contains(rec.calls[0].prompt, "-Issue 4242") {
+		t.Errorf("prompt should include fetched issue number; prompt=\n%s", rec.calls[0].prompt)
+	}
+}
+
+func TestAzureRMRefreshHookSkipsWhenIssueNumberCannotBeResolved(t *testing.T) {
+	rec := &runSessionRecorder{}
+	hook, err := NewAzureRMRefreshHook(AzureRMRefreshHookOptions{
+		RunSession: rec.run(),
+		ScriptPath: `C:\workspace\scripts\refresh-copilot-setup.ps1`,
+		Logger:     silentLogger(),
+	})
+	if err != nil {
+		t.Fatalf("NewAzureRMRefreshHook: %v", err)
+	}
+	dir := t.TempDir()
+	writeGoMod(t, dir, "module github.com/hashicorp/terraform-provider-azurerm\n")
+	info := WorkDirInfo{CardID: "card-x", WorkDir: dir} // no Number, no fetcher
+	if err := hook(context.Background(), info); err != nil {
+		t.Fatalf("hook should swallow unresolved-number, got %v", err)
+	}
+	if rec.callCount() != 0 {
+		t.Fatalf("hook must not spawn when issue number is unknown, got %d calls", rec.callCount())
 	}
 }
 
@@ -262,7 +314,15 @@ func TestAzureRMRefreshHookPropagatesRunSessionError(t *testing.T) {
 	dir := t.TempDir()
 	writeGoMod(t, dir, "module github.com/hashicorp/terraform-provider-azurerm\n")
 
-	err = hook(context.Background(), WorkDirInfo{CardID: "card", WorkDir: dir})
+	info := WorkDirInfo{
+		CardID:  "card",
+		WorkDir: dir,
+		// Pre-populate Classification.Number so the hook proceeds past
+		// the issue-number resolver and actually invokes RunSession;
+		// without a number resolveAzureRMIssueNumber short-circuits.
+		Classification: CardClassification{Number: "9"},
+	}
+	err = hook(context.Background(), info)
 	if err == nil {
 		t.Fatal("expected error to bubble up from RunSession")
 	}

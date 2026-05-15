@@ -17,6 +17,7 @@ import (
 	"github.com/lonegunmanb/trello-copilot/internal/app"
 	"github.com/lonegunmanb/trello-copilot/internal/app/prompts"
 	"github.com/lonegunmanb/trello-copilot/internal/app/prompttmpl"
+	"github.com/lonegunmanb/trello-copilot/internal/app/trelloclient"
 )
 
 func main() {
@@ -68,7 +69,20 @@ func main() {
 
 	runner := app.NewCopilotRunner(cfg.CopilotModel, logger)
 	runner.SetRouterDir(cfg.RouterDir)
-	runner.SetCardInfoFetcher(app.NewScriptCardInfoFetcher(cfg.RouterDir))
+
+	// Build the SDK-backed Trello client once at startup. Both the
+	// CardInfoFetcher (used to derive work_type from a card description)
+	// and the per-session `trello_*` tools share this client — no more
+	// pwsh.exe shell-out for any Trello traffic.
+	trelloClient, terr := trelloclient.New(
+		trelloclient.WithCredentials(cfg.TrelloAPIKey, cfg.TrelloAPIToken),
+		trelloclient.WithLogger(logger),
+	)
+	if terr != nil {
+		logger.Fatalf("event=trelloclient_init_failed err=%v", terr)
+	}
+	runner.SetTrelloClient(trelloClient)
+	runner.SetCardInfoFetcher(app.NewSDKCardInfoFetcher(trelloClient))
 	runner.SetPlaybooks(renderer)
 
 	// Register the AzureRM provider refresh hook: when the per-card
@@ -79,11 +93,11 @@ func main() {
 	// no-ops for any other repo.
 	if cfg.RouterDir != "" {
 		azurermHook, hookErr := app.NewAzureRMRefreshHook(app.AzureRMRefreshHookOptions{
-			Spawner:            runner.SessionSpawner(),
-			ScriptPath:         filepath.Join(cfg.RouterDir, "scripts", "refresh-copilot-setup.ps1"),
-			CardInfoScriptPath: filepath.Join(cfg.RouterDir, "scripts", "trello-get-card-info.ps1"),
-			Model:              cfg.CopilotModel,
-			Logger:             logger,
+			Spawner:         runner.SessionSpawner(),
+			ScriptPath:      filepath.Join(cfg.RouterDir, "scripts", "refresh-copilot-setup.ps1"),
+			CardInfoFetcher: app.NewSDKCardInfoFetcher(trelloClient),
+			Model:           cfg.CopilotModel,
+			Logger:          logger,
 		})
 		if hookErr != nil {
 			logger.Printf("event=azurerm_refresh_hook_register_failed err=%v", hookErr)

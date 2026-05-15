@@ -21,7 +21,7 @@ Gateway **不会主动结束你**，除了一种例外：**当你收到一条以
 
 ### 首轮自举：使用 gateway 注入的元数据 + 入口 playbook
 
-**`work_type` 由 gateway 决定，不是由你决定**。Gateway 已经在 CARD CONTEXT 里写好了 `work_type`、`kind`、`github_repo`、`github_number`、`github_url` 以及（当适用时）入口 playbook 的全文。**禁止**自己再调 `trello-get-card-info.ps1` 去推 work_type，**禁止**自己再去 `view` 那份已经被内联的 entry_playbook，**禁止**质疑或重写 gateway 给出的分类——和 CARD CONTEXT 不一致就是你错。
+**`work_type` 由 gateway 决定，不是由你决定**。Gateway 已经在 CARD CONTEXT 里写好了 `work_type`、`kind`、`github_repo`、`github_number`、`github_url` 以及（当适用时）入口 playbook 的全文。**禁止**自己再调 `trello_card_get` 工具（或任何 Trello 脚本）去推 work_type，**禁止**自己再去 `view` 那份已经被内联的 entry_playbook，**禁止**质疑或重写 gateway 给出的分类——和 CARD CONTEXT 不一致就是你错。
 
 第一次被 spawn 时，按下面的顺序自举：
 
@@ -32,8 +32,8 @@ Gateway **不会主动结束你**，除了一种例外：**当你收到一条以
 2. **当 CARD CONTEXT 内联了 `## ENTRY PLAYBOOK — <文件名>`**：把它当作本卡的硬约束（git remote 配置、push 目标、PR 目标仓库、base 分支、commit 规范、测试门禁、清理规则、分类流程、reviewer 规则等全在里面）。和 WORKER.md 冲突时**以入口 playbook 为准**。
    - 入口 playbook 通常会描述一条多步分发链（"先做顶层分类 → 人类批准 → 再 view 子类专属文件 → 子类文件再按看板列分发到 plan / action 文件"）。**严格按入口文件描述的触发条件 view 下一级，不要预先把所有候选下一级都 view 进来**。每个子文件里都带自己的"输出模板"，提前 view 多份模板会污染本阶段输出，让 LLM 在不同模板之间错配（典型症状：在分类阶段直接套用 plan 模板出修复方案，跳过了入口文件要求的双候选 + 0–100 分 + 试验设计流程）。
    - **判定"该不该现在 view 子文件"**：先回答两个问题——(a) 入口文件里是否存在一个"触发条件 → view 该子文件"的明文规则？(b) 当前卡片状态（list、已批准的分类、人类评论）是否满足该触发条件？两个都"是"才 view。两个其中之一为"否"就**不要 view**，等触发条件成立时（可能在后续被唤醒的某一轮）再说。
-3. **当 CARD CONTEXT 给出了 fallback 提示（"could not pre-classify..."）**：表示 gateway 拿不到卡片信息或这个 work_type 没有注册入口 playbook。此时——也只在此时——按 fallback 提示自己跑 `trello-get-card-info.ps1`、自己推 work_type、自己 view 路由目录里的入口文件。这是退化路径，不是默认路径。
-4. **全量重扫卡片评论（强制）**：调 `trello-get-comments-since.ps1 -CardId <card_id> -SinceIso 1970-01-01T00:00:00Z` 拿到这张卡的**全部历史评论**，按下面规则全部并入本卡上下文：
+3. **当 CARD CONTEXT 给出了 fallback 提示（"could not pre-classify..."）**：表示 gateway 拿不到卡片信息或这个 work_type 没有注册入口 playbook。此时——也只在此时——按 fallback 提示调用 gateway 工具 `trello_card_get` 拿到 `firstLine`、自己推 work_type、自己 view 路由目录里的入口文件。这是退化路径，不是默认路径。
+4. **全量重扫卡片评论（强制）**：调用 gateway 工具 `trello_card_comments_since`，传 `since=""`（或 `1970-01-01T00:00:00Z`）拿到这张卡的**全部历史评论**，按下面规则全部并入本卡上下文：
    - 以 `[agent]:` 开头的评论 = 前任 worker（或你自己之前轮次，session 被 reap 后已经丢失）留下的归档简报、Plan、Five Whys 链、试验记录、reviewer 结论等——**这是你恢复历史决策上下文的唯一来源**，不读就等于没干过。
    - 不以 `[agent]:` 开头的评论 = 人类历史意图与约束（如"OK 但注意别动 expandBar"、"先不要碰 v2 资源"等）——这些不是过期信息，是**到现在仍然有效的硬约束**，必须合并进后续每一步决策。
    - 你无法可靠区分"首次为这张卡 spawn"与"session 被 reap 后重建"两种场景，所以**这一步对所有首轮都是强制的**，不要试图省略。
@@ -51,7 +51,7 @@ Gateway **不会主动结束你**，除了一种例外：**当你收到一条以
 
 完成上面的"首轮自举"后，按顺序：
 
-1. 读卡片当前 list（不从事件 payload 里拿 `listAfter`，调 `trello-get-card-list.ps1`）
+1. 读卡片当前 list（不从事件 payload 里拿 `listAfter`，调 gateway 工具 `trello_card_list`）
 2. 查 §4 步骤 3 的表，查出这个 list 对应的**期望终态**与**应该做的事**
 3. 那件事**就是**你"当前正在做的任务"；立刻开始做
 
@@ -73,7 +73,9 @@ Gateway **不会主动结束你**，除了一种例外：**当你收到一条以
 
 **调用 exec 工具时，不要传 `host` 参数。** 系统已配置好执行位置；传 `host` 会直接报错。
 
-**⚠️ 不要在 exec 的 `command` 字段里内联 PowerShell 代码。** `$` 被吞、`&` 不允许、引号转义麻烦——所有 Trello / worker 操作都已封装为预写脚本，直接调用就行。
+**⚠️ Trello 操作一律走 gateway 注册的 `trello_*` 工具**（详见 §2.2），**不要**在 exec 里手写 `Invoke-RestMethod "https://api.trello.com/..."` 或调用旧的 `trello-*.ps1` 脚本（那些脚本在 SDK 迁移后已被废弃）。
+
+**⚠️ 不要在 exec 的 `command` 字段里内联 PowerShell 代码。** `$` 被吞、`&` 不允许、引号转义麻烦——只在需要调本地脚本（非 Trello 方面，例如 `markitdown`、`refresh-copilot-setup.ps1`）时使用 exec。
 
 调用形式始终是：
 
@@ -100,19 +102,28 @@ Gateway **不会主动结束你**，除了一种例外：**当你收到一条以
 | Ready for review | `TRELLO_READY_FOR_REVIEW` |
 | Done | `TRELLO_DONE` |
 
-### Trello 操作脚本
+### Trello 操作：gateway 注册的内进程工具（不走 exec）
+
+Gateway 已经把下面这组工具注册到你的 Copilot 会话里，**直接按名字调用**（调用格式是模型原生的 tool call，不是 exec）。Trello 凭据由 Go 端持有，你永远不会看到 `TRELLO_API_KEY` / `TRELLO_API_TOKEN`。
+
+| 工具名 | 用途 | 关键参数 |
+|------|------|------|
+| `trello_card_get` | 获取卡片名称和描述（`{id, name, desc, firstLine, idList, idBoard}`） | `card_id` |
+| `trello_card_list` | 获取卡片当前所在列 (`{id, name}`) | `card_id` |
+| `trello_board_lists` | 返回板上所有列 (`[{id,name},...]`) | `board_id` |
+| `trello_card_move` | 移动卡片到另一列（传 `target_list_id` 或 `target_list_name`），返回 `{from,to}` | `card_id` + `target_list_id` 或 `target_list_name` |
+| `trello_card_comment` | 发评论（`text` 必须以 `[agent]: ` 开头），返回 `{id, text, by, at}` | `card_id`, `text` |
+| `trello_card_latest_comment` | 获取最近一条评论 (`{id, text, by, at}`) | `card_id` |
+| `trello_card_comments_since` | 获取某时间点之后的全部评论（按时间升序） | `card_id`, `since` (RFC3339，可空) |
+
+### 其他本地脚本（走 exec，**非 Trello**）
 
 目录：`C:\Users\zjhe\.openclaw\workspace-trello-router\scripts\`
 
 | 脚本 | 用途 | 参数 |
 |------|------|------|
-| `trello-move-card.ps1` | 移动卡片到目标 list | `-CardId <id> -ListId <id>` |
-| `trello-get-card-list.ps1` | 获取卡片当前所在 list ID（纯字符串） | `-CardId <id>` |
-| `trello-get-card-info.ps1` | 获取卡片名称和描述（JSON：`name`/`desc`/`firstLine`） | `-CardId <id>` |
-| `trello-add-comment.ps1` | 在卡片上添加评论 | `-CardId <id> -Text "<内容>"` |
-| `trello-get-latest-comment.ps1` | 获取卡片最新一条评论（JSON：`empty`/`author`/`text`） | `-CardId <id>` |
-| `trello-get-comments-since.ps1` | 获取自某时间戳以来的所有评论（JSON 数组）；传 `1970-01-01T00:00:00Z` 即可拿全部 | `-CardId <id> -SinceIso <ISO时间>` |
-| `trello-log-event.ps1` | 追加日志到 `events.log`（UTF-8） | `-Fields @{...}` |
+| `refresh-copilot-setup.ps1` | 刷新上游 `.github/instructions/` 等 AI 指令集 | `<work_dir> -Issue <num>` |
+| `trello-log-event.ps1` | 追加本地 events.log（UTF-8）；仅用于本地调试，不接 Trello | `-Fields @{...}` |
 
 ### 工作目录
 
@@ -228,11 +239,11 @@ git -C <work_dir> status -sb
 
 无论本轮 user message 是什么类型，**都重新读一次现状**——不要相信事件 payload 里的 `listAfter` 还有效，因为期间人可能已经又移过去了：
 
-1. `trello-get-card-list.ps1 -CardId <card_id>` → `current_list_id` → 映射到 list 名称（§2）
+1. `trello_card_list` (`{card_id}`) → `{id, name}`，`name` 即列名。查 §2 的表得到期望终态。
 2. 读人类评论意图：
    - **首轮**：已经在 §0 步骤 6 做过全量重扫，本步直接复用那批评论即可，不需要再调一次。
-   - **后续轮默认**：`trello-get-latest-comment.ps1 -CardId <card_id>`；若返回不是空、`text` 也不以 `[agent]:` 开头、且你还没处理过这条，则它是需要合并进决策的人类意图。你自己上下文里记得上轮看过哪条评论就够了；若不确定，宁可重复读一次。
-   - **例外——本轮 user message 是 `deleteComment`**：人类刚删了一条评论，你上下文里记住的“人类意图”可能已经不再成立。**作废上下文里对人类意图的所有缓存**，调 `trello-get-comments-since.ps1 -CardId <card_id> -SinceIso 1970-01-01T00:00:00Z` 拿到全部评论，过滤出不以 `[agent]:` 开头的所有条目，重新推理人类当前意图。
+   - **后续轮默认**：调 `trello_card_latest_comment` (`{card_id}`)；若返回不是错误、`text` 也不以 `[agent]:` 开头、且你还没处理过这条，则它是需要合并进决策的人类意图。你自己上下文里记得上轮看过哪条评论就够了；若不确定，宁可重复读一次。
+   - **例外——本轮 user message 是 `deleteComment`**：人类刚删了一条评论，你上下文里记住的“人类意图”可能已经不再成立。**作废上下文里对人类意图的所有缓存**，调用 `trello_card_comments_since` (`{card_id, since:""}` 或 `1970-01-01T00:00:00Z`) 拿到全部评论，过滤出不以 `[agent]:` 开头的所有条目，重新推理人类当前意图。
 
 **所有不以 `[agent]:` 开头的评论 = 人类的最新意图。** 必须读完再做决定。
 
