@@ -10,8 +10,15 @@ import (
 type Config struct {
 	ListenAddr   string
 	TrelloSecret string
-	CallbackURL  string
-	CopilotModel string
+	// TrelloAPIKey / TrelloAPIToken authenticate every outbound Trello
+	// call the gateway makes (card lookups, comments, list moves) via
+	// the Go SDK. They replace the previous PowerShell-script-based
+	// scheme that read these same env vars per shell-out. Sourced from
+	// --trello-api-key / TRELLO_API_KEY (and the matching token pair).
+	TrelloAPIKey   string
+	TrelloAPIToken string
+	CallbackURL    string
+	CopilotModel   string
 	// RouterDir is the directory containing the trello helper scripts
 	// under scripts/ (e.g. trello-get-card-info.ps1,
 	// refresh-copilot-setup.ps1). Entry playbooks no longer live here —
@@ -42,17 +49,21 @@ const DefaultPlaybooksDirName = ".playbooks"
 
 func LoadConfig(args []string) (Config, error) {
 	cfg := Config{
-		ListenAddr:   envOrDefault("LISTEN_ADDR", ":18790"),
-		TrelloSecret: os.Getenv("TRELLO_API_SECRET"),
-		CallbackURL:  os.Getenv("CALLBACK_URL"),
-		CopilotModel: envOrDefault("COPILOT_MODEL", DefaultCopilotModel),
-		RouterDir:    envOrDefault("WORKSPACE_TRELLO_ROUTER_DIR", DefaultRouterDir),
-		PlaybooksDir: envOrDefault("TRELLO_PLAYBOOKS_DIR", defaultPlaybooksDir()),
+		ListenAddr:     envOrDefault("LISTEN_ADDR", ":18790"),
+		TrelloSecret:   os.Getenv("TRELLO_API_SECRET"),
+		TrelloAPIKey:   os.Getenv("TRELLO_API_KEY"),
+		TrelloAPIToken: os.Getenv("TRELLO_API_TOKEN"),
+		CallbackURL:    os.Getenv("CALLBACK_URL"),
+		CopilotModel:   envOrDefault("COPILOT_MODEL", DefaultCopilotModel),
+		RouterDir:      envOrDefault("WORKSPACE_TRELLO_ROUTER_DIR", DefaultRouterDir),
+		PlaybooksDir:   envOrDefault("TRELLO_PLAYBOOKS_DIR", defaultPlaybooksDir()),
 	}
 
 	fs := flag.NewFlagSet("gateway", flag.ContinueOnError)
 	fs.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "listen address")
 	fs.StringVar(&cfg.TrelloSecret, "trello-api-secret", cfg.TrelloSecret, "Trello API secret")
+	fs.StringVar(&cfg.TrelloAPIKey, "trello-api-key", cfg.TrelloAPIKey, "Trello API key (used by the Go SDK to talk to api.trello.com)")
+	fs.StringVar(&cfg.TrelloAPIToken, "trello-api-token", cfg.TrelloAPIToken, "Trello API token (used by the Go SDK to talk to api.trello.com)")
 	fs.StringVar(&cfg.CallbackURL, "callback-url", cfg.CallbackURL, "webhook callback URL used for signature verification")
 	fs.StringVar(&cfg.CopilotModel, "copilot-model", cfg.CopilotModel, "Copilot model to use for the agent session")
 	fs.StringVar(&cfg.RouterDir, "router-dir", cfg.RouterDir, "directory containing trello helper scripts under scripts/")
@@ -72,6 +83,12 @@ func LoadConfig(args []string) (Config, error) {
 func validateConfig(cfg Config) error {
 	if cfg.TrelloSecret == "" {
 		return errors.New("missing trello secret, set --trello-api-secret or TRELLO_API_SECRET")
+	}
+	if cfg.TrelloAPIKey == "" {
+		return errors.New("missing trello api key, set --trello-api-key or TRELLO_API_KEY")
+	}
+	if cfg.TrelloAPIToken == "" {
+		return errors.New("missing trello api token, set --trello-api-token or TRELLO_API_TOKEN")
 	}
 	if cfg.CallbackURL == "" {
 		return errors.New("missing callback URL, set --callback-url or CALLBACK_URL")
@@ -109,7 +126,9 @@ func envOrDefault(key, fallback string) string {
 }
 
 func (c Config) Redacted() string {
-	return fmt.Sprintf("listen=%s callback_url=%s copilot_model=%s router_dir=%s playbooks_dir=%s trello_api_secret=%s", c.ListenAddr, c.CallbackURL, c.CopilotModel, c.RouterDir, c.PlaybooksDir, redact(c.TrelloSecret))
+	return fmt.Sprintf("listen=%s callback_url=%s copilot_model=%s router_dir=%s playbooks_dir=%s trello_api_secret=%s trello_api_key=%s trello_api_token=%s",
+		c.ListenAddr, c.CallbackURL, c.CopilotModel, c.RouterDir, c.PlaybooksDir,
+		redact(c.TrelloSecret), redact(c.TrelloAPIKey), redact(c.TrelloAPIToken))
 }
 
 func redact(v string) string {

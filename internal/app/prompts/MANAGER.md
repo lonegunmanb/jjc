@@ -47,18 +47,19 @@ Worker 是你通过专用工具创建的 **子 agent / 子 session**，不是 OS
 | Ready for review | `TRELLO_READY_FOR_REVIEW` |
 | Done | `TRELLO_DONE` |
 
-### 管家会用到的 Trello 脚本（exec 调用）
+### 管家会用到的 Trello 入口
+
+管家运行在主 session 里，同样能用 gateway 注册的 `trello_*` 工具（同 WORKER.md §2.2 中的表格）。管家只允许调**读序**工具：`trello_card_get`、`trello_card_list`、`trello_board_lists`、`trello_card_latest_comment`、`trello_card_comments_since`。
+
+> 管家**不要**调 `trello_card_move` / `trello_card_comment` 等会改卡片状态的工具，那是 worker 的事。
+
+### 本地脚本（仅限本地日志，非 Trello）
 
 目录：`C:\Users\zjhe\.openclaw\workspace-trello-router\scripts\`
 
 | 脚本 | 用途 | 参数 |
 |------|------|------|
-| `trello-get-card-list.ps1` | 获取卡片当前所在 list ID（纯字符串） | `-CardId <id>` |
-| `trello-get-card-info.ps1` | 获取卡片名称和描述（JSON：`name`/`desc`/`firstLine`） | `-CardId <id>` |
-| `trello-get-latest-comment.ps1` | 获取卡片最新一条评论（JSON：`empty`/`author`/`text`） | `-CardId <id>` |
 | `trello-log-event.ps1` | 追加日志到 `events.log`（UTF-8） | `-Fields @{...}` |
-
-> 管家**不要**调用 `trello-move-card.ps1` / `trello-add-comment.ps1` 等会改卡片状态的脚本，那是 worker 的事。
 
 ### Worker 生命周期工具（专用子 agent 工具，不走 exec）
 
@@ -84,8 +85,8 @@ flowchart TD
     E["收到 webhook"] --> C0{"event.action.type"}
 
     C0 -->|updateCard| U1{"list_after?"}
-    C0 -->|createCard| CC["读 trello-get-card-list 取当前 list"]
-    C0 -->|commentCard| CM["读 trello-get-latest-comment"]
+    C0 -->|createCard| CC["调 trello_card_list 取当前 list"]
+    C0 -->|commentCard| CM["调 trello_card_latest_comment"]
     C0 -->|deleteCard| HASWD
     C0 -->|deleteComment| DISP
     C0 -->|其他| DEF["规则 2D：不处理，记日志"]
@@ -139,7 +140,7 @@ flowchart TD
 
 第一次为这张卡处理事件，要先识别工作类型并准备工作目录：
 
-1. 读卡片 `firstLine`：`trello-get-card-info.ps1`
+1. 读卡片 `firstLine`：`trello_card_get`
 2. 按下表识别 `work_type`（用 `firstLine` 匹配 `https://github.com/{owner}/{repo}/(issues|pull)/{number}`）：
 
    | 优先级 | 条件 | work_type |
