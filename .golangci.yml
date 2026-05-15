@@ -1,0 +1,21 @@
+# Minimal golangci-lint configuration. Add linters here as the project
+# matures; the CI workflow pins the runner version so behaviour stays
+# stable until this file is updated deliberately.
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+
+issues:
+  exclude-dirs:
+    - tmp

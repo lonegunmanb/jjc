@@ -12,18 +12,33 @@ type Config struct {
 	TrelloSecret string
 	CallbackURL  string
 	CopilotModel string
-	// RouterDir is the directory containing the per-work_type entry
-	// playbook markdown files (e.g. azurerm_provider_issue.md) and the
-	// trello-get-card-info.ps1 helper script under scripts/. The gateway
-	// reads the appropriate entry playbook into each worker's system
-	// prompt at session creation time.
+	// RouterDir is the directory containing the trello helper scripts
+	// under scripts/ (e.g. trello-get-card-info.ps1,
+	// refresh-copilot-setup.ps1). Entry playbooks no longer live here —
+	// they are loaded from PlaybooksDir and pre-rendered into a
+	// process-temp directory at startup. RouterDir remains because the
+	// scripts still ship alongside the operator's router checkout.
 	RouterDir string
+	// PlaybooksDir is the directory holding all .md playbook files
+	// (skeleton prompts and entry playbooks). Every .md file under it is
+	// copied into a process-level temp directory at startup, then each
+	// rendered file has its `{{<basename>}}` references substituted with
+	// the absolute temp-dir path of the named file. The directory MUST
+	// exist; missing target referenced via `{{...}}` causes startup to
+	// fail with event=playbook_render_failed. Override via
+	// TRELLO_PLAYBOOKS_DIR or --playbooks-dir.
+	PlaybooksDir string
 }
 
 // DefaultRouterDir is the conventional location of the workspace-trello-router
 // checkout on the operator's machine. Override via WORKSPACE_TRELLO_ROUTER_DIR
 // or --router-dir.
 const DefaultRouterDir = `C:\Users\zjhe\.openclaw\workspace-trello-router`
+
+// DefaultPlaybooksDirName is the conventional default basename of the
+// playbooks source directory, looked up under the process's current
+// working directory. Override via TRELLO_PLAYBOOKS_DIR or --playbooks-dir.
+const DefaultPlaybooksDirName = ".playbooks"
 
 func LoadConfig(args []string) (Config, error) {
 	cfg := Config{
@@ -32,6 +47,7 @@ func LoadConfig(args []string) (Config, error) {
 		CallbackURL:  os.Getenv("CALLBACK_URL"),
 		CopilotModel: envOrDefault("COPILOT_MODEL", DefaultCopilotModel),
 		RouterDir:    envOrDefault("WORKSPACE_TRELLO_ROUTER_DIR", DefaultRouterDir),
+		PlaybooksDir: envOrDefault("TRELLO_PLAYBOOKS_DIR", defaultPlaybooksDir()),
 	}
 
 	fs := flag.NewFlagSet("gateway", flag.ContinueOnError)
@@ -39,7 +55,8 @@ func LoadConfig(args []string) (Config, error) {
 	fs.StringVar(&cfg.TrelloSecret, "trello-api-secret", cfg.TrelloSecret, "Trello API secret")
 	fs.StringVar(&cfg.CallbackURL, "callback-url", cfg.CallbackURL, "webhook callback URL used for signature verification")
 	fs.StringVar(&cfg.CopilotModel, "copilot-model", cfg.CopilotModel, "Copilot model to use for the agent session")
-	fs.StringVar(&cfg.RouterDir, "router-dir", cfg.RouterDir, "directory containing per-work_type entry playbooks and trello scripts")
+	fs.StringVar(&cfg.RouterDir, "router-dir", cfg.RouterDir, "directory containing trello helper scripts under scripts/")
+	fs.StringVar(&cfg.PlaybooksDir, "playbooks-dir", cfg.PlaybooksDir, "directory containing playbook .md files (default <cwd>/.playbooks)")
 
 	if err := fs.Parse(args[1:]); err != nil {
 		return Config{}, err
@@ -62,7 +79,25 @@ func validateConfig(cfg Config) error {
 	if cfg.CopilotModel == "" {
 		return errors.New("missing copilot model, set --copilot-model or COPILOT_MODEL")
 	}
+	if cfg.PlaybooksDir == "" {
+		return errors.New("missing playbooks dir, set --playbooks-dir or TRELLO_PLAYBOOKS_DIR")
+	}
+	info, err := os.Stat(cfg.PlaybooksDir)
+	if err != nil {
+		return fmt.Errorf("playbooks-dir %q invalid: %w", cfg.PlaybooksDir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("playbooks-dir %q is not a directory", cfg.PlaybooksDir)
+	}
 	return nil
+}
+
+func defaultPlaybooksDir() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return DefaultPlaybooksDirName
+	}
+	return wd + string(os.PathSeparator) + DefaultPlaybooksDirName
 }
 
 func envOrDefault(key, fallback string) string {
@@ -74,7 +109,7 @@ func envOrDefault(key, fallback string) string {
 }
 
 func (c Config) Redacted() string {
-	return fmt.Sprintf("listen=%s callback_url=%s copilot_model=%s router_dir=%s trello_api_secret=%s", c.ListenAddr, c.CallbackURL, c.CopilotModel, c.RouterDir, redact(c.TrelloSecret))
+	return fmt.Sprintf("listen=%s callback_url=%s copilot_model=%s router_dir=%s playbooks_dir=%s trello_api_secret=%s", c.ListenAddr, c.CallbackURL, c.CopilotModel, c.RouterDir, c.PlaybooksDir, redact(c.TrelloSecret))
 }
 
 func redact(v string) string {

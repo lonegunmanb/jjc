@@ -1,0 +1,362 @@
+// Package prompttmpl pre-renders playbook .md files at process startup.
+//
+// At startup the gateway is given a single playbooks source directory
+// (--playbooks-dir / TRELLO_PLAYBOOKS_DIR). All .md files under that
+// directory are copied into a process-level temp directory created via
+// os.MkdirTemp, then a tiny template pass rewrites every `{{<basename>}}`
+// reference inside the copied files to the absolute path of <basename>
+// in the same temp directory. The runner then loads the assembled worker
+// system prompt from these rendered files instead of the //go:embed
+// snapshots in internal/app/prompts.
+//
+// The renderer also seeds a small set of "embedded defaults" (the
+// skeleton prompts: BOOTSTRAP/IDENTITY/WORKER/TOOLS/USER) so the gateway
+// runs without requiring the operator to copy them into <playbooks-dir>;
+// any user file with the same basename overrides the embedded copy.
+//
+// The temp dir lives for the lifetime of the process and is removed on
+// shutdown via Renderer.Cleanup. Source playbooks (under
+// <playbooks-dir>) and the embedded defaults are never modified.
+package prompttmpl
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+// Renderer owns the per-process temp directory holding the rendered
+// playbook copies. Construct one via New, query it via Path / Read /
+// Files, and call Cleanup at process exit.
+type Renderer struct {
+	dir    string         // absolute path to the temp directory
+	files  map[string]string // basename -> absolute path inside dir
+	logger *log.Logger
+}
+
+// Options configures how a Renderer is built.
+type Options struct {
+	// PlaybooksDir is the user-controlled source directory. Required;
+	// must exist and be a directory (the caller is expected to validate
+	// it before passing it in, but New double-checks).
+	PlaybooksDir string
+
+	// EmbeddedDefaults maps basename -> file content for the built-in
+	// skeleton prompts that ship with the binary. Each entry is written
+	// to the temp dir before PlaybooksDir is overlaid, so a user file of
+	// the same basename wins.
+	EmbeddedDefaults map[string]string
+
+	// Logger receives structured event lines (one per significant
+	// step). Optional; defaults to log.Default().
+	Logger *log.Logger
+}
+
+// New builds a Renderer: it creates a temp directory, materialises the
+// embedded defaults, copies every .md from PlaybooksDir on top, and
+// then renders `{{<basename>}}` references to absolute paths inside the
+// temp dir.
+//
+// On any failure (invalid PlaybooksDir, copy error, missing reference,
+// invalid reference name) the temp dir is removed before returning so a
+// failed boot leaves no stale state behind.
+func New(opts Options) (*Renderer, error) {
+	logger := opts.Logger
+	if logger == nil {
+		logger = log.Default()
+	}
+
+	if opts.PlaybooksDir == "" {
+		return nil, errors.New("prompttmpl: PlaybooksDir is required")
+	}
+	info, err := os.Stat(opts.PlaybooksDir)
+	if err != nil {
+		return nil, fmt.Errorf("prompttmpl: stat playbooks dir %q: %w", opts.PlaybooksDir, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("prompttmpl: playbooks dir %q is not a directory", opts.PlaybooksDir)
+	}
+
+	tempDir, err := os.MkdirTemp("", "openclaw-playbooks-*")
+	if err != nil {
+		return nil, fmt.Errorf("prompttmpl: create temp dir: %w", err)
+	}
+	logger.Printf("event=playbooks_tempdir_created path=%s source=%s", tempDir, opts.PlaybooksDir)
+
+	r := &Renderer{
+		dir:    tempDir,
+		files:  map[string]string{},
+		logger: logger,
+	}
+
+	cleanupOnError := func() {
+		if rmErr := os.RemoveAll(tempDir); rmErr != nil {
+			logger.Printf("event=playbooks_tempdir_cleanup_failed path=%s err=%v", tempDir, rmErr)
+		}
+	}
+
+	// 1. Materialise embedded defaults (lowest priority).
+	for name, content := range opts.EmbeddedDefaults {
+		if err := validateBasename(name); err != nil {
+			cleanupOnError()
+			return nil, fmt.Errorf("prompttmpl: embedded default %q: %w", name, err)
+		}
+		dst := filepath.Join(tempDir, name)
+		if werr := os.WriteFile(dst, []byte(content), 0o644); werr != nil {
+			cleanupOnError()
+			return nil, fmt.Errorf("prompttmpl: write embedded default %q: %w", name, werr)
+		}
+		r.files[name] = dst
+	}
+
+	// 2. Overlay user-provided .md files (overwrites same-name embedded
+	//    defaults). Recurse one level only? Issue says flat layout. Use
+	//    ReadDir to keep things simple and reject subdirs implicitly.
+	entries, err := os.ReadDir(opts.PlaybooksDir)
+	if err != nil {
+		cleanupOnError()
+		return nil, fmt.Errorf("prompttmpl: read playbooks dir %q: %w", opts.PlaybooksDir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.EqualFold(filepath.Ext(name), ".md") {
+			continue
+		}
+		if err := validateBasename(name); err != nil {
+			cleanupOnError()
+			return nil, fmt.Errorf("prompttmpl: source file %q: %w", name, err)
+		}
+		src := filepath.Join(opts.PlaybooksDir, name)
+		dst := filepath.Join(tempDir, name)
+		if cerr := copyFile(src, dst); cerr != nil {
+			cleanupOnError()
+			return nil, fmt.Errorf("prompttmpl: copy %q -> %q: %w", src, dst, cerr)
+		}
+		r.files[name] = dst
+	}
+
+	// 3. Render every file in temp dir: substitute `{{basename}}` -> abs path.
+	for name, path := range r.files {
+		if err := r.renderFile(name, path); err != nil {
+			cleanupOnError()
+			return nil, err
+		}
+	}
+
+	logger.Printf("event=playbooks_rendered count=%d dir=%s", len(r.files), tempDir)
+	return r, nil
+}
+
+// Dir returns the absolute path of the per-process temp directory.
+func (r *Renderer) Dir() string { return r.dir }
+
+// Files returns the basenames of every rendered file, sorted for stable
+// iteration.
+func (r *Renderer) Files() []string {
+	out := make([]string, 0, len(r.files))
+	for n := range r.files {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Path returns the absolute temp-dir path for the named playbook (by
+// bare basename). The boolean is false if the playbook is not present.
+func (r *Renderer) Path(name string) (string, bool) {
+	p, ok := r.files[name]
+	return p, ok
+}
+
+// Read returns the rendered content of the named playbook (by bare
+// basename) or an error if it is not present or unreadable.
+func (r *Renderer) Read(name string) (string, error) {
+	p, ok := r.files[name]
+	if !ok {
+		return "", fmt.Errorf("prompttmpl: playbook %q not found in %s", name, r.dir)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return "", fmt.Errorf("prompttmpl: read %q: %w", p, err)
+	}
+	return string(b), nil
+}
+
+// Cleanup removes the temp directory. Safe to call multiple times.
+func (r *Renderer) Cleanup() error {
+	if r == nil || r.dir == "" {
+		return nil
+	}
+	err := os.RemoveAll(r.dir)
+	if err != nil {
+		r.logger.Printf("event=playbooks_tempdir_cleanup_failed path=%s err=%v", r.dir, err)
+		return err
+	}
+	r.logger.Printf("event=playbooks_tempdir_cleaned path=%s", r.dir)
+	r.dir = ""
+	r.files = nil
+	return nil
+}
+
+// renderFile reads the file at path, substitutes every `{{<basename>}}`
+// occurrence with the absolute path of <basename> in r.dir, and writes
+// the result back. Any reference whose target is missing or whose name
+// is invalid (contains `/`, `\`, `..`, or is empty) causes an error
+// carrying the source file, 1-based line/column, and the offending
+// reference.
+func (r *Renderer) renderFile(name, path string) error {
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("prompttmpl: read %q: %w", path, err)
+	}
+	rendered, rerr := renderBytes(src, name, r.files)
+	if rerr != nil {
+		r.logger.Printf("event=playbook_render_failed file=%s line=%d column=%d reference=%q reason=%s",
+			name, rerr.Line, rerr.Column, rerr.Reference, rerr.Reason)
+		return rerr
+	}
+	if err := os.WriteFile(path, rendered, 0o644); err != nil {
+		return fmt.Errorf("prompttmpl: write rendered %q: %w", path, err)
+	}
+	return nil
+}
+
+// RenderError is returned by the substitution pass. Fields are exported
+// so callers (and tests) can assert against them.
+type RenderError struct {
+	File      string // source basename (e.g. "WORKER.md")
+	Line      int    // 1-based line number where the offending `{{...}}` starts
+	Column    int    // 1-based column (byte offset within the line) of the `{{`
+	Reference string // raw text between `{{` and `}}`, including any whitespace
+	Reason    string // short machine-readable code, e.g. referenced_file_not_found
+	Detail    string // human-readable explanation
+}
+
+func (e *RenderError) Error() string {
+	return fmt.Sprintf("prompttmpl: %s: %s:%d:%d: reference %q: %s",
+		e.Reason, e.File, e.Line, e.Column, e.Reference, e.Detail)
+}
+
+// renderBytes performs the substitution pass on src and returns the
+// rewritten bytes. Exposed (lower-case) for unit testing.
+func renderBytes(src []byte, file string, files map[string]string) ([]byte, *RenderError) {
+	var out strings.Builder
+	out.Grow(len(src))
+
+	line, col := 1, 1
+	i := 0
+	for i < len(src) {
+		// Track line/column for the next byte we are about to emit or
+		// scan past. When we hit `{{` we capture line/col of that `{{`.
+		if i+1 < len(src) && src[i] == '{' && src[i+1] == '{' {
+			refStart := i + 2
+			refEnd := -1
+			for j := refStart; j+1 < len(src); j++ {
+				if src[j] == '}' && src[j+1] == '}' {
+					refEnd = j
+					break
+				}
+			}
+			if refEnd < 0 {
+				// Unterminated `{{` — treat as literal and move on.
+				out.WriteByte(src[i])
+				if src[i] == '\n' {
+					line++
+					col = 1
+				} else {
+					col++
+				}
+				i++
+				continue
+			}
+			rawRef := string(src[refStart:refEnd])
+			refName := strings.TrimSpace(rawRef)
+			if err := validateBasename(refName); err != nil {
+				return nil, &RenderError{
+					File:      file,
+					Line:      line,
+					Column:    col,
+					Reference: rawRef,
+					Reason:    "invalid_reference_name",
+					Detail:    err.Error(),
+				}
+			}
+			abs, ok := files[refName]
+			if !ok {
+				return nil, &RenderError{
+					File:      file,
+					Line:      line,
+					Column:    col,
+					Reference: rawRef,
+					Reason:    "referenced_file_not_found",
+					Detail:    fmt.Sprintf("no playbook named %q has been rendered", refName),
+				}
+			}
+			out.WriteString(abs)
+			// Advance i past the closing `}}` and update line/col by
+			// scanning the consumed slice for newlines.
+			consumed := src[i : refEnd+2]
+			for _, b := range consumed {
+				if b == '\n' {
+					line++
+					col = 1
+				} else {
+					col++
+				}
+			}
+			i = refEnd + 2
+			continue
+		}
+
+		out.WriteByte(src[i])
+		if src[i] == '\n' {
+			line++
+			col = 1
+		} else {
+			col++
+		}
+		i++
+	}
+	return []byte(out.String()), nil
+}
+
+// validateBasename rejects empty names, names containing path separators
+// (`/`, `\`), and `..` (anywhere) so a playbook reference cannot escape
+// the temp directory.
+func validateBasename(name string) error {
+	if name == "" {
+		return errors.New("empty name")
+	}
+	if strings.ContainsAny(name, `/\`) {
+		return errors.New("name contains a path separator")
+	}
+	if strings.Contains(name, "..") {
+		return errors.New("name contains \"..\"")
+	}
+	return nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}

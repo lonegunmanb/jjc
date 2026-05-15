@@ -1,12 +1,29 @@
 package app
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// setupPlaybooksDir creates an empty .playbooks directory in a per-test
+// temp dir and returns its path. Tests use this to satisfy the
+// playbooks-dir validation that requires the directory to exist.
+func setupPlaybooksDir(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), ".playbooks")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir playbooks: %v", err)
+	}
+	return dir
+}
 
 func TestLoadConfigFromEnv(t *testing.T) {
 	t.Setenv("LISTEN_ADDR", ":9090")
 	t.Setenv("TRELLO_API_SECRET", "env-secret")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("COPILOT_MODEL", "env-model")
+	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
 
 	cfg, err := LoadConfig([]string{"cmd"})
 	if err != nil {
@@ -32,6 +49,7 @@ func TestLoadConfigFlagOverridesEnv(t *testing.T) {
 	t.Setenv("TRELLO_API_SECRET", "env-secret")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("COPILOT_MODEL", "env-model")
+	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
 
 	cfg, err := LoadConfig([]string{"cmd", "--listen", ":8088", "--trello-api-secret", "flag-secret", "--copilot-model", "flag-model"})
 	if err != nil {
@@ -59,6 +77,7 @@ func TestLoadConfigMissingRequired(t *testing.T) {
 func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("TRELLO_API_SECRET", "env-secret")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
+	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
 
 	cfg, err := LoadConfig([]string{"cmd"})
 	if err != nil {
@@ -72,3 +91,15 @@ func TestLoadConfigDefaults(t *testing.T) {
 		t.Fatalf("expected default copilot model %q, got %q", DefaultCopilotModel, cfg.CopilotModel)
 	}
 }
+
+func TestLoadConfigPlaybooksDirMissing(t *testing.T) {
+	t.Setenv("TRELLO_API_SECRET", "env-secret")
+	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
+	t.Setenv("TRELLO_PLAYBOOKS_DIR", filepath.Join(t.TempDir(), "does-not-exist"))
+
+	_, err := LoadConfig([]string{"cmd"})
+	if err == nil {
+		t.Fatal("expected error when playbooks-dir does not exist")
+	}
+}
+

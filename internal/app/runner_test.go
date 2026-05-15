@@ -3,10 +3,15 @@ package app
 import (
 	"context"
 	"errors"
+	"io"
 	"log"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lonegunmanb/trello-copilot/internal/app/prompttmpl"
 )
 
 func TestNewCopilotRunnerDefaultsModel(t *testing.T) {
@@ -68,7 +73,7 @@ func TestNewWorkerSessionWithoutClientReturnsError(t *testing.T) {
 }
 
 func TestAssembleWorkerSystemPromptContainsExpectedSections(t *testing.T) {
-	got := assembleWorkerSystemPrompt("the-card-id", workerBootstrap{cardID: "the-card-id"})
+	got := assembleWorkerSystemPrompt("the-card-id", workerBootstrap{cardID: "the-card-id"}, nil)
 	for _, must := range []string{"# BOOTSTRAP", "# IDENTITY", "# WORKER", "# TOOLS", "# USER", "# CARD CONTEXT", "the-card-id"} {
 		if !strings.Contains(got, must) {
 			t.Fatalf("worker system prompt missing %q", must)
@@ -95,7 +100,7 @@ func TestAssembleWorkerSystemPromptInlinesPlaybook(t *testing.T) {
 		playbookPath:     `C:\fake\azurerm_provider_issue.md`,
 		playbookContent:  "# AZURERM ISSUE PLAYBOOK\n\nStep A: classify.\n",
 	}
-	got := assembleWorkerSystemPrompt("card-1", bs)
+	got := assembleWorkerSystemPrompt("card-1", bs, nil)
 	for _, must := range []string{
 		"work_type: terraform-provider-azurerm",
 		"kind: issue",
@@ -116,9 +121,43 @@ func TestAssembleWorkerSystemPromptInlinesPlaybook(t *testing.T) {
 }
 
 func TestAssembleWorkerSystemPromptFallback(t *testing.T) {
-	got := assembleWorkerSystemPrompt("card-x", workerBootstrap{cardID: "card-x"})
+	got := assembleWorkerSystemPrompt("card-x", workerBootstrap{cardID: "card-x"}, nil)
 	if !strings.Contains(got, "Fall back to the WORKER.md §0 self-bootstrap") {
 		t.Fatalf("expected fallback notice, got:\n%s", got)
+	}
+}
+
+func TestAssembleWorkerSystemPromptUsesRenderedSkeletons(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "WORKER.md"), []byte("custom worker body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := prompttmpl.New(prompttmpl.Options{
+		PlaybooksDir: src,
+		EmbeddedDefaults: map[string]string{
+			"BOOTSTRAP.md": "embedded-bootstrap",
+			"IDENTITY.md":  "embedded-identity",
+			"WORKER.md":    "embedded-worker",
+			"TOOLS.md":     "embedded-tools",
+			"USER.md":      "embedded-user",
+		},
+		Logger: log.New(io.Discard, "", 0),
+	})
+	if err != nil {
+		t.Fatalf("new renderer: %v", err)
+	}
+	defer r.Cleanup()
+
+	got := assembleWorkerSystemPrompt("card-y", workerBootstrap{cardID: "card-y"}, r)
+	if !strings.Contains(got, "custom worker body") {
+		t.Fatalf("expected user-supplied WORKER content; got:\n%s", got)
+	}
+	if !strings.Contains(got, "embedded-bootstrap") {
+		t.Fatalf("expected embedded BOOTSTRAP fallback; got:\n%s", got)
+	}
+	workerPath, _ := r.Path("WORKER.md")
+	if !strings.Contains(got, workerPath) {
+		t.Fatalf("expected WORKER override comment to mention %s; got:\n%s", workerPath, got)
 	}
 }
 

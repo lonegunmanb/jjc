@@ -30,6 +30,22 @@ func EmbeddedManager() string { return embeddedManager }
 // EmbeddedWorker returns the WORKER.md content baked into the binary.
 func EmbeddedWorker() string { return embeddedWorker }
 
+// Defaults returns the embedded skeleton playbook contents keyed by
+// their canonical bare basenames. The prompttmpl renderer materialises
+// each entry into the per-process temp directory at startup as a
+// fallback for operators who have not copied the skeleton files into
+// their own --playbooks-dir; any user file with the same basename
+// overrides the embedded copy.
+func Defaults() map[string]string {
+	return map[string]string{
+		"BOOTSTRAP.md": Bootstrap,
+		"IDENTITY.md":  Identity,
+		"WORKER.md":    embeddedWorker,
+		"TOOLS.md":     Tools,
+		"USER.md":      User,
+	}
+}
+
 // ResolveManager returns the MANAGER.md content. If a file named MANAGER.md
 // exists next to the running executable, its content is used; otherwise the
 // embedded copy is returned. The override path that was used (if any) is
