@@ -34,7 +34,7 @@ type AzureRMRefreshHookOptions struct {
 	Refresher aiassistedrefresh.Refresher
 
 	// CardInfoFetcher resolves the GitHub issue number when the gateway
-	// has not already classified the card (i.e. info.Classification.Number
+	// has not already classified the card (i.e. info.Classification.GitHub.Number
 	// is empty). Optional: when nil, an unclassified card causes the hook
 	// to skip with a logged warning rather than fall over.
 	CardInfoFetcher CardInfoFetcher
@@ -157,18 +157,18 @@ func isAzureRMProviderModule(workDir string) (bool, error) {
 // hook fires) and only falls back to a Trello fetch when the
 // classification is missing.
 func resolveAzureRMIssueNumber(ctx context.Context, info WorkDirInfo, fetcher CardInfoFetcher, logger *log.Logger) (string, error) {
-	if n := strings.TrimSpace(info.Classification.Number); n != "" {
+	if n := strings.TrimSpace(info.Classification.GitHub.Number); n != "" {
 		return n, nil
 	}
 	if fetcher == nil {
-		return "", errors.New("no classification.Number and no CardInfoFetcher configured")
+		return "", errors.New("no classification.GitHub.Number and no CardInfoFetcher configured")
 	}
 	text, err := fetcher(ctx, info.CardID)
 	if err != nil {
 		return "", fmt.Errorf("fetch card info: %w", err)
 	}
 	cls := ClassifyCard(text)
-	if n := strings.TrimSpace(cls.Number); n != "" {
+	if n := strings.TrimSpace(cls.GitHub.Number); n != "" {
 		return n, nil
 	}
 	logger.Printf("event=azurerm_refresh_hook_classify_no_number card_id=%s text_bytes=%d",

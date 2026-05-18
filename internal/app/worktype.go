@@ -18,26 +18,45 @@ const (
 	WorkTypeGeneric         WorkType = "generic"
 )
 
-// IssueOrPR distinguishes the two GitHub URL flavours a card may point at.
-// It is used together with WorkType to select the right additional
-// instructions file (e.g. avm_issue.md vs avm_pr.md).
-type IssueOrPR string
+// GitHubItemKind distinguishes the two GitHub URL flavours a card may
+// point at. It is used together with WorkType to select the right
+// additional instructions file (e.g. avm_issue.md vs avm_pr.md).
+type GitHubItemKind string
 
 const (
-	KindIssue   IssueOrPR = "issue"
-	KindPR      IssueOrPR = "pr"
-	KindUnknown IssueOrPR = ""
+	GitHubItemKindIssue   GitHubItemKind = "issue"
+	GitHubItemKindPR      GitHubItemKind = "pr"
+	GitHubItemKindUnknown GitHubItemKind = ""
 )
+
+// GitHubRef carries the GitHub-specific reference parsed out of a Trello
+// card's first description line. Its zero value means "this card has no
+// GitHub reference"; callers should branch on Present() rather than
+// inspecting individual fields.
+type GitHubRef struct {
+	Owner    string         // empty when no GitHub URL was matched
+	Repo     string         // empty when no GitHub URL was matched
+	ItemKind GitHubItemKind // "issue", "pr", or "" when no GitHub URL was matched
+	Number   string         // issue / PR number, empty when no GitHub URL was matched
+	URL      string         // the matched URL as seen in firstLine, empty if none
+}
+
+// Present reports whether the GitHubRef carries a usable owner/repo pair
+// (i.e. a GitHub URL was matched on the card's first description line).
+// Every call site that previously did
+// `if c.Owner != "" && c.Repo != ""` should branch on this helper.
+func (g GitHubRef) Present() bool {
+	return g.Owner != "" && g.Repo != ""
+}
 
 // CardClassification is the result of inspecting a Trello card's first
 // non-empty description line for a GitHub URL.
 type CardClassification struct {
 	WorkType WorkType
-	Kind     IssueOrPR
-	Owner    string // empty when no GitHub URL was matched
-	Repo     string // empty when no GitHub URL was matched
-	Number   string // issue / PR number, empty when no GitHub URL was matched
-	URL      string // the matched URL as seen in firstLine, empty if none
+	// GitHub is the optional GitHub reference parsed from the card's
+	// first description line. The zero value means "this card has no
+	// GitHub reference"; use GitHub.Present() to gate consumers.
+	GitHub GitHubRef
 }
 
 // githubURLPattern matches https?://github.com/{owner}/{repo}/(issues|pull)/{number}
@@ -54,21 +73,23 @@ var githubURLPattern = regexp.MustCompile(`https?://github\.com/([A-Za-z0-9._-]+
 func ClassifyCard(firstLine string) CardClassification {
 	m := githubURLPattern.FindStringSubmatch(firstLine)
 	if m == nil {
-		return CardClassification{WorkType: WorkTypeGeneric, Kind: KindUnknown}
+		return CardClassification{WorkType: WorkTypeGeneric}
 	}
 
 	owner, repo, kindToken, number := m[1], m[2], m[3], m[4]
-	kind := KindIssue
+	kind := GitHubItemKindIssue
 	if kindToken == "pull" {
-		kind = KindPR
+		kind = GitHubItemKindPR
 	}
 
 	c := CardClassification{
-		Owner:  owner,
-		Repo:   repo,
-		Number: number,
-		URL:    m[0],
-		Kind:   kind,
+		GitHub: GitHubRef{
+			Owner:    owner,
+			Repo:     repo,
+			Number:   number,
+			URL:      m[0],
+			ItemKind: kind,
+		},
 	}
 
 	repoLower := strings.ToLower(repo)
@@ -111,24 +132,24 @@ func ClassifyCard(firstLine string) CardClassification {
 func EntryPlaybookFilename(c CardClassification) string {
 	switch c.WorkType {
 	case WorkTypeAVMModule:
-		switch c.Kind {
-		case KindIssue:
+		switch c.GitHub.ItemKind {
+		case GitHubItemKindIssue:
 			return "avm_issue.md"
-		case KindPR:
+		case GitHubItemKindPR:
 			return "avm_pr.md"
 		}
 	case WorkTypeProviderAzureRM:
-		switch c.Kind {
-		case KindIssue:
+		switch c.GitHub.ItemKind {
+		case GitHubItemKindIssue:
 			return "azurerm_provider_issue.md"
-		case KindPR:
+		case GitHubItemKindPR:
 			return "azurerm_provider_pr.md"
 		}
 	case WorkTypeTerraformLegacy:
-		switch c.Kind {
-		case KindIssue:
+		switch c.GitHub.ItemKind {
+		case GitHubItemKindIssue:
 			return "tfvm_issue.md"
-		case KindPR:
+		case GitHubItemKindPR:
 			return "tfvm_pr.md"
 		}
 	}

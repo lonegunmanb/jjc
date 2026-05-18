@@ -87,11 +87,13 @@ func TestPrepareClonesWhenGitHubRepoPresent(t *testing.T) {
 	p, git := newPreparerForTest(t)
 	c := CardClassification{
 		WorkType: WorkTypeProviderAzureRM,
-		Kind:     KindIssue,
-		Owner:    "hashicorp",
-		Repo:     "terraform-provider-azurerm",
-		Number:   "32258",
-		URL:      "https://github.com/hashicorp/terraform-provider-azurerm/issues/32258",
+		GitHub: GitHubRef{
+			ItemKind: GitHubItemKindIssue,
+			Owner:    "hashicorp",
+			Repo:     "terraform-provider-azurerm",
+			Number:   "32258",
+			URL:      "https://github.com/hashicorp/terraform-provider-azurerm/issues/32258",
+		},
 	}
 
 	info, err := p.Prepare(context.Background(), "card-1", c)
@@ -126,11 +128,13 @@ func TestPrepareSkipsCloneWhenGitDirExists(t *testing.T) {
 	p, git := newPreparerForTest(t)
 	c := CardClassification{
 		WorkType: WorkTypeProviderAzureRM,
-		Kind:     KindIssue,
-		Owner:    "hashicorp",
-		Repo:     "terraform-provider-azurerm",
-		Number:   "1",
-		URL:      "https://github.com/hashicorp/terraform-provider-azurerm/issues/1",
+		GitHub: GitHubRef{
+			ItemKind: GitHubItemKindIssue,
+			Owner:    "hashicorp",
+			Repo:     "terraform-provider-azurerm",
+			Number:   "1",
+			URL:      "https://github.com/hashicorp/terraform-provider-azurerm/issues/1",
+		},
 	}
 
 	if _, err := p.Prepare(context.Background(), "card-2", c); err != nil {
@@ -163,10 +167,12 @@ func TestPrepareCloneFailureIsRecordedNotReturned(t *testing.T) {
 	git.err = errors.New("network down")
 	c := CardClassification{
 		WorkType: WorkTypeProviderAzureRM,
-		Kind:     KindIssue,
-		Owner:    "hashicorp",
-		Repo:     "terraform-provider-azurerm",
-		Number:   "9",
+		GitHub: GitHubRef{
+			ItemKind: GitHubItemKindIssue,
+			Owner:    "hashicorp",
+			Repo:     "terraform-provider-azurerm",
+			Number:   "9",
+		},
 	}
 
 	info, err := p.Prepare(context.Background(), "card-fail", c)
@@ -205,11 +211,13 @@ func TestHooksRunInOrderWithFullInfo(t *testing.T) {
 
 	c := CardClassification{
 		WorkType: WorkTypeProviderAzureRM,
-		Kind:     KindIssue,
-		Owner:    "hashicorp",
-		Repo:     "terraform-provider-azurerm",
-		Number:   "42",
-		URL:      "https://github.com/hashicorp/terraform-provider-azurerm/issues/42",
+		GitHub: GitHubRef{
+			ItemKind: GitHubItemKindIssue,
+			Owner:    "hashicorp",
+			Repo:     "terraform-provider-azurerm",
+			Number:   "42",
+			URL:      "https://github.com/hashicorp/terraform-provider-azurerm/issues/42",
+		},
 	}
 
 	info, err := p.Prepare(context.Background(), "card-hooks", c)
@@ -234,7 +242,7 @@ func TestHooksRunInOrderWithFullInfo(t *testing.T) {
 		if got.WorkDir != info.WorkDir {
 			t.Errorf("hook %d got wrong work_dir %q vs %q", i, got.WorkDir, info.WorkDir)
 		}
-		if got.Classification.Number != "42" {
+		if got.Classification.GitHub.Number != "42" {
 			t.Errorf("hook %d missing classification: %+v", i, got.Classification)
 		}
 		if !got.Cloned {

@@ -56,7 +56,7 @@ type WorkDirInfo struct {
 // HasGitHubRepo reports whether the classification carries a usable
 // owner/repo pair to drive a git clone.
 func (i WorkDirInfo) HasGitHubRepo() bool {
-	return i.Classification.Owner != "" && i.Classification.Repo != ""
+	return i.Classification.GitHub.Present()
 }
 
 // CloneURL returns the canonical HTTPS clone URL derived from the
@@ -66,7 +66,7 @@ func (i WorkDirInfo) CloneURL() string {
 		return ""
 	}
 	return fmt.Sprintf("https://github.com/%s/%s.git",
-		i.Classification.Owner, i.Classification.Repo)
+		i.Classification.GitHub.Owner, i.Classification.GitHub.Repo)
 }
 
 // WorkDirHook is a callback invoked by the runner immediately after the

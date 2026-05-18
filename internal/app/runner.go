@@ -478,9 +478,9 @@ func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) wo
 	bs.firstLine = firstLine
 	bs.classification = ClassifyCard(firstLine)
 	r.logger.Printf("event=worker_bootstrap_classified card_id=%s work_type=%s kind=%s owner=%s repo=%s number=%s text_bytes=%d",
-		cardID, bs.classification.WorkType, bs.classification.Kind,
-		bs.classification.Owner, bs.classification.Repo, bs.classification.Number, len(firstLine))
-	if bs.classification.Owner == "" || bs.classification.Repo == "" {
+		cardID, bs.classification.WorkType, bs.classification.GitHub.ItemKind,
+		bs.classification.GitHub.Owner, bs.classification.GitHub.Repo, bs.classification.GitHub.Number, len(firstLine))
+	if !bs.classification.GitHub.Present() {
 		// Help operators figure out why we couldn't extract a GitHub
 		// owner/repo/number — usually because the script returned an
 		// unexpected JSON shape or the card body has no GitHub URL.
@@ -494,7 +494,7 @@ func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) wo
 	playbook := EntryPlaybookFilename(bs.classification)
 	if playbook == "" {
 		r.logger.Printf("event=worker_bootstrap_no_playbook card_id=%s work_type=%s kind=%s",
-			cardID, bs.classification.WorkType, bs.classification.Kind)
+			cardID, bs.classification.WorkType, bs.classification.GitHub.ItemKind)
 		return bs
 	}
 	bs.playbookFilename = playbook
@@ -515,7 +515,7 @@ func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) wo
 			bs.playbookPath = path
 			bs.playbookContent = content
 			r.logger.Printf("event=worker_bootstrap_ready card_id=%s work_type=%s kind=%s playbook=%s playbook_bytes=%d source=playbooks_tempdir",
-				cardID, bs.classification.WorkType, bs.classification.Kind, playbook, len(content))
+				cardID, bs.classification.WorkType, bs.classification.GitHub.ItemKind, playbook, len(content))
 			return bs
 		}
 	}
@@ -530,7 +530,7 @@ func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) wo
 	bs.playbookPath = playbookPath
 	bs.playbookContent = string(content)
 	r.logger.Printf("event=worker_bootstrap_ready card_id=%s work_type=%s kind=%s playbook=%s playbook_bytes=%d source=router_dir",
-		cardID, bs.classification.WorkType, bs.classification.Kind, playbook, len(content))
+		cardID, bs.classification.WorkType, bs.classification.GitHub.ItemKind, playbook, len(content))
 	return bs
 }
 
@@ -621,17 +621,17 @@ func buildCardContext(bs workerBootstrap) string {
 	if bs.classification.WorkType != "" {
 		fmt.Fprintf(&b, "- work_type: %s\n", bs.classification.WorkType)
 	}
-	if bs.classification.Kind != "" {
-		fmt.Fprintf(&b, "- kind: %s\n", bs.classification.Kind)
+	if bs.classification.GitHub.ItemKind != "" {
+		fmt.Fprintf(&b, "- kind: %s\n", bs.classification.GitHub.ItemKind)
 	}
-	if bs.classification.Owner != "" && bs.classification.Repo != "" {
-		fmt.Fprintf(&b, "- github_repo: %s/%s\n", bs.classification.Owner, bs.classification.Repo)
+	if bs.classification.GitHub.Present() {
+		fmt.Fprintf(&b, "- github_repo: %s/%s\n", bs.classification.GitHub.Owner, bs.classification.GitHub.Repo)
 	}
-	if bs.classification.Number != "" {
-		fmt.Fprintf(&b, "- github_number: %s\n", bs.classification.Number)
+	if bs.classification.GitHub.Number != "" {
+		fmt.Fprintf(&b, "- github_number: %s\n", bs.classification.GitHub.Number)
 	}
-	if bs.classification.URL != "" {
-		fmt.Fprintf(&b, "- github_url: %s\n", bs.classification.URL)
+	if bs.classification.GitHub.URL != "" {
+		fmt.Fprintf(&b, "- github_url: %s\n", bs.classification.GitHub.URL)
 	}
 	if bs.playbookFilename != "" {
 		fmt.Fprintf(&b, "- entry_playbook: %s\n", bs.playbookPath)

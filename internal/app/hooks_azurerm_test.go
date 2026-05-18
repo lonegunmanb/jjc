@@ -170,10 +170,12 @@ func TestAzureRMRefreshHookInvokesRefresherWithExpectedOptions(t *testing.T) {
 		WorkDir: dir,
 		Classification: CardClassification{
 			WorkType: WorkTypeProviderAzureRM,
-			Kind:     KindIssue,
-			Owner:    "hashicorp",
-			Repo:     "terraform-provider-azurerm",
-			Number:   "32258",
+			GitHub: GitHubRef{
+				ItemKind: GitHubItemKindIssue,
+				Owner:    "hashicorp",
+				Repo:     "terraform-provider-azurerm",
+				Number:   "32258",
+			},
 		},
 	}
 	if err := hook(context.Background(), info); err != nil {
@@ -259,9 +261,9 @@ func TestAzureRMRefreshHookPropagatesRefresherError(t *testing.T) {
 	info := WorkDirInfo{
 		CardID:  "card",
 		WorkDir: dir,
-		// Pre-populate Classification.Number so the hook proceeds past
+		// Pre-populate Classification.GitHub.Number so the hook proceeds past
 		// the issue-number resolver and actually invokes the Refresher.
-		Classification: CardClassification{Number: "9"},
+		Classification: CardClassification{GitHub: GitHubRef{Number: "9"}},
 	}
 	err = hook(context.Background(), info)
 	if err == nil {
@@ -277,7 +279,7 @@ func TestAzureRMRefreshHookPropagatesRefresherError(t *testing.T) {
 // TestAzureRMRefreshHookInvokesRefresherForPRCard is one of the two
 // regression guards for issue #1: the hook must treat a Pull-Request
 // card exactly the same as an Issue card. The hook does not look at
-// Classification.Kind directly, so this is currently true by
+// Classification.GitHub.ItemKind directly, so this is currently true by
 // construction — but pinning it down here means a future maintainer
 // can't reintroduce the historic "first line must be a GitHub issue
 // URL" assumption without breaking this test.
@@ -299,10 +301,12 @@ func TestAzureRMRefreshHookInvokesRefresherForPRCard(t *testing.T) {
 		WorkDir: dir,
 		Classification: CardClassification{
 			WorkType: WorkTypeProviderAzureRM,
-			Kind:     KindPR, // <-- the critical difference vs. the issue-card test
-			Owner:    "hashicorp",
-			Repo:     "terraform-provider-azurerm",
-			Number:   "12345",
+			GitHub: GitHubRef{
+				ItemKind: GitHubItemKindPR, // <-- the critical difference vs. the issue-card test
+				Owner:    "hashicorp",
+				Repo:     "terraform-provider-azurerm",
+				Number:   "12345",
+			},
 		},
 	}
 	if err := hook(context.Background(), info); err != nil {
