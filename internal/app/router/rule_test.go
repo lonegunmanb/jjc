@@ -279,7 +279,7 @@ func TestLoadRuleConfigFromExampleFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadRuleConfig(%s): %v", path, err)
 	}
-	const canonicalRuleCount = 8 // seven GitHub-specific rules plus fallback
+	const canonicalRuleCount = 8
 	if len(cfg.Rules) != canonicalRuleCount {
 		t.Fatalf("expected %d canonical rules, got %d", canonicalRuleCount, len(cfg.Rules))
 	}
