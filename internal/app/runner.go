@@ -729,8 +729,8 @@ func buildCardContext(bs workerBootstrap, view *kanban.Resolved) string {
 	if len(bs.playbooks) > 0 {
 		b.WriteString("The gateway has already matched your card against an HCL rule and inlined the rule playbook(s) ")
 		b.WriteString("below — treat it as authoritative system-prompt-grade guidance and do not ")
-		b.WriteString("re-derive the rule yourself. On your first turn just `git clone --depth 1` ")
-		b.WriteString("the repo into work_dir (skip if already present), then proceed straight into ")
+		b.WriteString("re-derive the rule yourself. On your first turn, if the repository is not already ")
+		b.WriteString("present in work_dir, `git clone --depth 1` it there, then proceed straight into ")
 		b.WriteString("the workflow defined by the inlined playbook(s).\n\n")
 		for _, pb := range bs.playbooks {
 			fmt.Fprintf(&b, "## RULE PLAYBOOK — %s\n\n", pb.Name)
@@ -744,7 +744,7 @@ func buildCardContext(bs workerBootstrap, view *kanban.Resolved) string {
 		// Fallback path: gateway could not classify the card or no
 		// playbook is registered for this rule. The worker must
 		// follow the legacy WORKER.md §0 self-bootstrap procedure.
-		b.WriteString("The gateway could not pre-classify this card, or no entry playbook is ")
+		b.WriteString("The gateway could not pre-classify this card, or no rule playbook is ")
 		b.WriteString("registered for its matched rule. Fall back to the WORKER.md §0 self-bootstrap ")
 		b.WriteString("procedure: run `trello-get-card-info.ps1 -CardId ")
 		b.WriteString(bs.cardID)
