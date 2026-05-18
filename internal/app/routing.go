@@ -186,10 +186,14 @@ func categoryFor(view *kanban.Resolved, listID, listName string) kanban.Category
 	}
 	// Fallback path: no resolved view, use the legacy hard-coded names
 	// so unit tests that build a Route call without a Trello board
-	// continue to observe the prior behaviour.
+	// continue to observe the prior behaviour. Plan and Action both
+	// resolve to dispatch in this path; the distinct category values
+	// only matter once the resolved view is wired in.
 	switch strings.ToLower(strings.TrimSpace(listName)) {
-	case "analyze", "in action":
-		return kanban.CategoryAction // both dispatch — Plan/Action are equivalent in routing
+	case "analyze":
+		return kanban.CategoryPlan
+	case "in action":
+		return kanban.CategoryAction
 	case "done":
 		return kanban.CategoryDone
 	case "":

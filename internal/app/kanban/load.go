@@ -52,16 +52,14 @@ func LoadAndResolve(ctx context.Context, hclPath, boardID string, fetcher BoardL
 
 	// Issue requirement: log every unclaimed board list at startup so
 	// the operator notices a board column that no role claimed.
+	// Build a single name → id index up front so the WARN loop is O(n).
+	idByName := make(map[string]string, len(lists))
+	for _, l := range lists {
+		idByName[l.Name] = l.ID
+	}
 	for _, name := range resolved.UnclaimedListNames {
-		// Find the matching list ID for the log line. Cheap nested
-		// loop — UnclaimedListNames is tiny in practice.
-		for _, l := range lists {
-			if l.Name == name {
-				logger.Printf("event=kanban_unclaimed_list name=%q id=%s fallback_category=wait",
-					name, l.ID)
-				break
-			}
-		}
+		logger.Printf("event=kanban_unclaimed_list name=%q id=%s fallback_category=wait",
+			name, idByName[name])
 	}
 
 	return resolved, nil
