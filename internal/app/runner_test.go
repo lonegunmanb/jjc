@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lonegunmanb/trello-copilot/internal/app/kanban"
 	"github.com/lonegunmanb/trello-copilot/internal/app/prompttmpl"
 )
 
@@ -134,7 +135,7 @@ func TestMarkActionSeenRingDoesNotGrowUnbounded(t *testing.T) {
 }
 
 func TestAssembleWorkerSystemPromptContainsExpectedSections(t *testing.T) {
-	got := assembleWorkerSystemPrompt("the-card-id", workerBootstrap{cardID: "the-card-id"}, nil)
+	got := assembleWorkerSystemPrompt("the-card-id", workerBootstrap{cardID: "the-card-id"}, nil, nil)
 	for _, must := range []string{"# BOOTSTRAP", "# IDENTITY", "# WORKER", "# TOOLS", "# USER", "# CARD CONTEXT", "the-card-id"} {
 		if !strings.Contains(got, must) {
 			t.Fatalf("worker system prompt missing %q", must)
@@ -163,7 +164,7 @@ func TestAssembleWorkerSystemPromptInlinesPlaybook(t *testing.T) {
 		playbookPath:     `C:\fake\azurerm_provider_issue.md`,
 		playbookContent:  "# AZURERM ISSUE PLAYBOOK\n\nStep A: classify.\n",
 	}
-	got := assembleWorkerSystemPrompt("card-1", bs, nil)
+	got := assembleWorkerSystemPrompt("card-1", bs, nil, nil)
 	for _, must := range []string{
 		"work_type: terraform-provider-azurerm",
 		"kind: issue",
@@ -184,9 +185,46 @@ func TestAssembleWorkerSystemPromptInlinesPlaybook(t *testing.T) {
 }
 
 func TestAssembleWorkerSystemPromptFallback(t *testing.T) {
-	got := assembleWorkerSystemPrompt("card-x", workerBootstrap{cardID: "card-x"}, nil)
+	got := assembleWorkerSystemPrompt("card-x", workerBootstrap{cardID: "card-x"}, nil, nil)
 	if !strings.Contains(got, "Fall back to the WORKER.md §0 self-bootstrap") {
 		t.Fatalf("expected fallback notice, got:\n%s", got)
+	}
+}
+
+// TestAssembleWorkerSystemPromptInjectsKanbanIDs pins the issue #5
+// requirement that CARD CONTEXT lists `kanban_*_id` for each role and
+// `kanban_agent_comment_prefixes` so WORKER.md §2 can drop the legacy
+// `TRELLO_*` env-var bridge.
+func TestAssembleWorkerSystemPromptInjectsKanbanIDs(t *testing.T) {
+	view := &kanban.Resolved{
+		BoardID:              "B1",
+		Plan:                 kanban.Role{Name: "Analyze", ID: "L_PLAN"},
+		Action:               kanban.Role{Name: "In action", ID: "L_ACTION"},
+		Done:                 kanban.Role{Name: "Done", ID: "L_DONE"},
+		Wait: kanban.WaitRoles{
+			PlanReview:   kanban.Role{Name: "Ready for plan review", ID: "L_RPR"},
+			ActionReview: kanban.Role{Name: "Ready for review", ID: "L_RR"},
+			Generic:      kanban.Role{Name: "Pending PR", ID: "L_PPR"},
+			Exception:    kanban.Role{Name: "Need Attention", ID: "L_NA"},
+		},
+		AgentCommentPrefixes: []string{"[agent]:", "[bot]:"},
+	}
+	got := assembleWorkerSystemPrompt("card-z", workerBootstrap{cardID: "card-z"}, nil, view)
+	mustContain := []string{
+		"kanban_board_id: B1",
+		"kanban_plan_id: L_PLAN",
+		"kanban_action_id: L_ACTION",
+		"kanban_wait_plan_review_id: L_RPR",
+		"kanban_wait_action_review_id: L_RR",
+		"kanban_wait_generic_id: L_PPR",
+		"kanban_wait_exception_id: L_NA",
+		"kanban_done_id: L_DONE",
+		`kanban_agent_comment_prefixes: ["[agent]:", "[bot]:"]`,
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(got, s) {
+			t.Fatalf("expected substring %q in CARD CONTEXT, got:\n%s", s, got)
+		}
 	}
 }
 
@@ -211,7 +249,7 @@ func TestAssembleWorkerSystemPromptUsesRenderedSkeletons(t *testing.T) {
 	}
 	defer r.Cleanup()
 
-	got := assembleWorkerSystemPrompt("card-y", workerBootstrap{cardID: "card-y"}, r)
+	got := assembleWorkerSystemPrompt("card-y", workerBootstrap{cardID: "card-y"}, r, nil)
 	if !strings.Contains(got, "custom worker body") {
 		t.Fatalf("expected user-supplied WORKER content; got:\n%s", got)
 	}

@@ -1,6 +1,10 @@
 package app
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/lonegunmanb/trello-copilot/internal/app/kanban"
+)
 
 func TestRoute(t *testing.T) {
 	cases := []struct {
@@ -132,7 +136,7 @@ func TestRoute(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := Route([]byte(tc.body))
+			got := Route([]byte(tc.body), nil)
 			if got.Action != tc.want {
 				t.Errorf("Action = %s, want %s", got.Action, tc.want)
 			}
@@ -141,6 +145,100 @@ func TestRoute(t *testing.T) {
 			}
 			if got.ListAfter != tc.wantList {
 				t.Errorf("ListAfter = %q, want %q", got.ListAfter, tc.wantList)
+			}
+			if got.Reason != tc.wantReason {
+				t.Errorf("Reason = %q, want %q", got.Reason, tc.wantReason)
+			}
+		})
+	}
+}
+
+// TestRouteWithKanbanView pins the issue #5 behaviour: Route consults
+// the resolved kanban view (id-first, name-fallback) instead of the
+// legacy hard-coded list names, and lists not claimed by any role
+// collapse to category=wait (notify_departure) rather than being
+// silently dropped.
+func TestRouteWithKanbanView(t *testing.T) {
+	view := &kanban.Resolved{
+		BoardID:       "B1",
+		Plan:          kanban.Role{Name: "Analyze", ID: "L_PLAN"},
+		Action:        kanban.Role{Name: "In action", ID: "L_ACTION"},
+		Done:          kanban.Role{Name: "Done", ID: "L_DONE"},
+		Wait: kanban.WaitRoles{
+			PlanReview:   kanban.Role{Name: "Ready for plan review", ID: "L_RPR"},
+			ActionReview: kanban.Role{Name: "Ready for review", ID: "L_RR"},
+			Generic:      kanban.Role{Name: "Pending PR", ID: "L_PPR"},
+			Exception:    kanban.Role{Name: "Need Attention", ID: "L_NA"},
+		},
+		AgentCommentPrefixes: []string{"[agent]:", "[bot]:"},
+		PlanListIDs:          []string{"L_PLAN"},
+		ActionListIDs:        []string{"L_ACTION"},
+		DoneListIDs:          []string{"L_DONE"},
+		WaitListIDs:          []string{"L_RPR", "L_RR", "L_PPR", "L_NA", "L_INBOX"},
+		UnclaimedListNames:   []string{"Inbox"},
+	}
+
+	cases := []struct {
+		name       string
+		body       string
+		want       RouteAction
+		wantReason string
+	}{
+		{
+			name:       "id-based match dispatches to action category",
+			body:       `{"action":{"type":"updateCard","data":{"card":{"id":"card01"},"listAfter":{"id":"L_ACTION","name":"In action"}}}}`,
+			want:       RouteDispatch,
+			wantReason: "moved_to_active_list",
+		},
+		{
+			name:       "id-based match terminates for done",
+			body:       `{"action":{"type":"updateCard","data":{"card":{"id":"card02"},"listAfter":{"id":"L_DONE","name":"Done"}}}}`,
+			want:       RouteTerminate,
+			wantReason: "moved_to_done",
+		},
+		{
+			name:       "unclaimed list collapses to wait (notify_departure)",
+			body:       `{"action":{"type":"updateCard","data":{"card":{"id":"card03"},"listAfter":{"id":"L_INBOX","name":"Inbox"}}}}`,
+			want:       RouteNotifyDeparture,
+			wantReason: "moved_to_non_active_list",
+		},
+		{
+			name:       "name-only fallback still works for legacy payloads",
+			body:       `{"action":{"type":"updateCard","data":{"card":{"id":"card04"},"listAfter":{"name":"In action"}}}}`,
+			want:       RouteDispatch,
+			wantReason: "moved_to_active_list",
+		},
+		{
+			name:       "createCard in plan dispatches",
+			body:       `{"action":{"type":"createCard","data":{"card":{"id":"card05"},"list":{"id":"L_PLAN","name":"Analyze"}}}}`,
+			want:       RouteDispatch,
+			wantReason: "created_in_active_list",
+		},
+		{
+			name:       "createCard in wait list dropped",
+			body:       `{"action":{"type":"createCard","data":{"card":{"id":"card06"},"list":{"id":"L_NA","name":"Need Attention"}}}}`,
+			want:       RouteDrop,
+			wantReason: "created_in_non_active_list",
+		},
+		{
+			name:       "agent self-comment dropped via configured prefix list",
+			body:       `{"action":{"type":"commentCard","data":{"card":{"id":"card07"},"text":"[bot]: heartbeat"}}}`,
+			want:       RouteDrop,
+			wantReason: "agent_self_comment",
+		},
+		{
+			name:       "human comment still dispatches",
+			body:       `{"action":{"type":"commentCard","data":{"card":{"id":"card08"},"text":"please retry"}}}`,
+			want:       RouteDispatch,
+			wantReason: "human_comment",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Route([]byte(tc.body), view)
+			if got.Action != tc.want {
+				t.Errorf("Action = %s, want %s", got.Action, tc.want)
 			}
 			if got.Reason != tc.wantReason {
 				t.Errorf("Reason = %q, want %q", got.Reason, tc.wantReason)

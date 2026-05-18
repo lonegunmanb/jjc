@@ -12,6 +12,8 @@ import (
 	"time"
 
 	copilot "github.com/github/copilot-sdk/go"
+
+	"github.com/lonegunmanb/trello-copilot/internal/app/kanban"
 )
 
 // WorkerSession is the subset of *copilot.Session that the dispatcher
@@ -98,6 +100,13 @@ type Dispatcher struct {
 
 	globalLog *GlobalEventLog
 
+	// kanbanView is the resolved list-name → list-id mapping produced
+	// at startup. Routing uses it to decide which category a Trello
+	// list move falls into. Nil is tolerated (Route falls back to the
+	// hard-coded legacy names) so unit tests that don't talk to Trello
+	// keep working.
+	kanbanView *kanban.Resolved
+
 	mu      sync.Mutex
 	workers map[string]*workerHandle
 	stopped bool
@@ -137,6 +146,23 @@ func (d *Dispatcher) SetGlobalLog(g *GlobalEventLog) {
 	d.globalLog = g
 }
 
+// SetKanbanView installs the resolved kanban view that Route consults
+// to translate Trello list moves into routing categories. Call once at
+// startup, before the first Dispatch. Passing nil leaves the
+// dispatcher in legacy mode (Route uses hard-coded list names) — only
+// useful for tests that don't stand up the Trello-side resolution.
+func (d *Dispatcher) SetKanbanView(view *kanban.Resolved) {
+	d.kanbanView = view
+}
+
+// KanbanView returns the resolved view installed via SetKanbanView,
+// or nil if none has been installed. Exposed for the runner so the
+// per-card CARD CONTEXT renderer can inline the resolved list IDs
+// without duplicating the wiring.
+func (d *Dispatcher) KanbanView() *kanban.Resolved {
+	return d.kanbanView
+}
+
 func (d *Dispatcher) recordGlobal(cardID, kind, summary string) {
 	if d.globalLog != nil {
 		d.globalLog.Record(cardID, kind, summary)
@@ -151,7 +177,7 @@ func (d *Dispatcher) recordGlobal(cardID, kind, summary string) {
 // made not to enqueue) — it does NOT wait for the worker to finish
 // processing it. This is what lets us reply 202 to Trello immediately.
 func (d *Dispatcher) Dispatch(ctx context.Context, eventID string, rawBody []byte) error {
-	decision := Route(rawBody)
+	decision := Route(rawBody, d.kanbanView)
 	d.logger.Printf("event=route_decided event_id=%s action=%s card_id=%s list_after=%q reason=%s",
 		eventID, decision.Action, decision.CardID, decision.ListAfter, decision.Reason)
 	d.recordGlobal(decision.CardID, decision.Action.String(), decision.ListAfter+" "+decision.Reason)
