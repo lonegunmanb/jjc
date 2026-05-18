@@ -60,7 +60,8 @@ Both CLI flags and environment variables are supported. CLI flags take precedenc
 | `--trello-api-secret` | `TRELLO_API_SECRET` | | **yes** | Trello API secret used for webhook signature verification (the value from your Trello webhook registration, NOT the API token). |
 | `--trello-api-key` | `TRELLO_API_KEY` | | **yes** | Trello API key. The Go SDK authenticates every outbound Trello call (board lists, card reads, comments, list moves) with this key + token pair. |
 | `--trello-api-token` | `TRELLO_API_TOKEN` | | **yes** | Trello API token. See above. |
-| `--callback-url` | `CALLBACK_URL` | | **yes** | Public webhook callback URL registered in Trello. Must exactly match the URL Trello signs. |
+| `--callback-url` | `CALLBACK_URL` | | only with `--tunnel=none` | Public webhook callback URL registered in Trello. Must exactly match the URL Trello signs. Rejected with the default auto-tunnel path. |
+| `--tunnel` | `TRELLO_GATEWAY_TUNNEL` | `cloudflared` | | Tunnel provider. `cloudflared` starts a TryCloudflare quick tunnel, waits for its public URL, reconciles the Trello board webhook, and uses that URL for signature verification. `none` disables auto-tunnel/webhook management and requires `--callback-url`. |
 | `--copilot-model` | `COPILOT_MODEL` | `claude-opus-4.6-1m` | | Copilot model name used for worker sessions. |
 | `--router-dir` | `WORKSPACE_TRELLO_ROUTER_DIR` | `C:\Users\zjhe\.openclaw\workspace-trello-router` | **yes** | Directory containing `router.hcl` and the legacy `scripts/` helpers. |
 | `--playbooks-dir` | `TRELLO_PLAYBOOKS_DIR` | `<cwd>/.playbooks` | **yes** | Directory containing the `.md` playbook files. Must exist and be a directory; missing files referenced via `{{<basename>}}` fail startup. |
@@ -86,7 +87,6 @@ export LISTEN_ADDR=":18790"
 export TRELLO_API_SECRET="your_trello_webhook_secret"
 export TRELLO_API_KEY="your_trello_api_key"
 export TRELLO_API_TOKEN="your_trello_api_token"
-export CALLBACK_URL="https://your-public-domain/"
 export COPILOT_MODEL="claude-opus-4.6-1m"
 export WORKSPACE_TRELLO_ROUTER_DIR="C:\\Users\\zjhe\\.openclaw\\workspace-trello-router"
 export TRELLO_PLAYBOOKS_DIR="C:\\project\\trello-openclaw-webhook-gateway\\playbook"
@@ -95,7 +95,9 @@ export TRELLO_KANBAN_BOARD_ID="64xxxxxxxxxxxxxxxxxxxxxx"
 ./trello-copilot
 ```
 
-### 4. Or run with CLI flags
+With no `--tunnel` argument, the gateway uses the dev-friendly default `--tunnel=cloudflared`: it starts `cloudflared tunnel --url http://localhost:<listen-port>`, waits for the `https://*.trycloudflare.com/` URL, updates or creates the Trello webhook for `TRELLO_KANBAN_BOARD_ID`, and uses that exact URL for webhook signature verification. Install `cloudflared` first, or opt out with `--tunnel=none` when you manage a stable public URL yourself.
+
+### 4. Or run with CLI flags (default quick tunnel)
 
 ```bash
 ./trello-copilot \
@@ -103,6 +105,23 @@ export TRELLO_KANBAN_BOARD_ID="64xxxxxxxxxxxxxxxxxxxxxx"
   --trello-api-secret "your_trello_webhook_secret" \
   --trello-api-key "your_trello_api_key" \
   --trello-api-token "your_trello_api_token" \
+  --copilot-model "claude-opus-4.6-1m" \
+  --router-dir "C:\\Users\\zjhe\\.openclaw\\workspace-trello-router" \
+  --playbooks-dir "C:\\project\\trello-openclaw-webhook-gateway\\playbook" \
+  --kanban-board-id "64xxxxxxxxxxxxxxxxxxxxxx"
+```
+
+### 5. Production opt-out with a stable callback URL
+
+Use `--tunnel=none` when a public domain already points at the gateway and you manage the Trello webhook callback manually:
+
+```bash
+./trello-copilot \
+  --listen ":18790" \
+  --trello-api-secret "your_trello_webhook_secret" \
+  --trello-api-key "your_trello_api_key" \
+  --trello-api-token "your_trello_api_token" \
+  --tunnel "none" \
   --callback-url "https://your-public-domain/" \
   --copilot-model "claude-opus-4.6-1m" \
   --router-dir "C:\\Users\\zjhe\\.openclaw\\workspace-trello-router" \
@@ -123,7 +142,7 @@ Trello sends a `HEAD /` request when a webhook is registered. The gateway return
 For each `POST /` event, the gateway:
 
 1. Reads the raw request body.
-2. Verifies `X-Trello-Webhook` against `TRELLO_API_SECRET` and `CALLBACK_URL`.
+2. Verifies `X-Trello-Webhook` against `TRELLO_API_SECRET` and the gateway's in-memory callback URL (from the auto-tunnel URL by default, or `--callback-url` when `--tunnel=none`).
 3. Logs a human-readable event summary.
 4. Immediately returns `202 Accepted` to Trello to avoid webhook retries.
 5. Processes the event asynchronously through the Copilot runner and dispatcher.
