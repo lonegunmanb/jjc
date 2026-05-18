@@ -312,7 +312,7 @@ func (t *ActivityTracker) RecordEvent(e copilot.SessionEvent) {
 
 // SetClassification stores the per-card classification on the worker
 // status. Safe to call from any goroutine; intended to be invoked once at
-// session creation time after ClassifyCard has run.
+// session creation time after rule-input parsing has run.
 func (t *ActivityTracker) SetClassification(c CardClassification) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

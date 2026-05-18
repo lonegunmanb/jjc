@@ -17,6 +17,7 @@ import (
 	"github.com/lonegunmanb/trello-copilot/internal/app/kanban"
 	"github.com/lonegunmanb/trello-copilot/internal/app/prompts"
 	"github.com/lonegunmanb/trello-copilot/internal/app/prompttmpl"
+	"github.com/lonegunmanb/trello-copilot/internal/app/router"
 	"github.com/lonegunmanb/trello-copilot/internal/app/trelloclient"
 )
 
@@ -42,13 +43,14 @@ type CopilotRunner struct {
 	// Both are optional: when routerDir is empty or cardInfoFetcher is
 	// nil, the worker session falls back to deriving work_type itself
 	// per the legacy WORKER.md §0 bootstrap procedure.
-	routerDir       string
-	cardInfoFetcher CardInfoFetcher
+	routerDir          string
+	cardInfoFetcher    CardInfoFetcher
+	cardSignalsFetcher CardSignalsFetcher
+	ruleEngine         *router.RuleEngine
 
 	// playbooks is the per-process pre-rendered playbook directory. When
 	// non-nil it supplies the skeleton prompts (BOOTSTRAP / IDENTITY /
-	// WORKER / TOOLS / USER) and any per-work_type entry playbook
-	// referenced by EntryPlaybookFilename. When nil, the runner falls
+	// WORKER / TOOLS / USER) and any rule-selected playbook. When nil, the runner falls
 	// back to the //go:embed snapshots in internal/app/prompts (so
 	// historic call sites and tests keep working).
 	playbooks *prompttmpl.Renderer
@@ -173,11 +175,18 @@ func (r *CopilotRunner) Dispatcher() *Dispatcher { return r.dispatcher }
 func (r *CopilotRunner) SetRouterDir(dir string) { r.routerDir = dir }
 
 // SetCardInfoFetcher installs the function used at session-creation time
-// to obtain the card's first description line (input to ClassifyCard).
+// to obtain the card's first description line (legacy fallback input).
 // Pass nil to disable auto-classification (worker must self-derive per
 // WORKER.md §0 fallback). Must be called before the first
 // NewWorkerSession invocation.
 func (r *CopilotRunner) SetCardInfoFetcher(f CardInfoFetcher) { r.cardInfoFetcher = f }
+
+// SetCardSignalsFetcher installs the structured function used at session
+// creation time to obtain the card.* inputs for HCL rule evaluation.
+func (r *CopilotRunner) SetCardSignalsFetcher(f CardSignalsFetcher) { r.cardSignalsFetcher = f }
+
+// SetRuleEngine installs the HCL rule engine used to choose rule playbooks.
+func (r *CopilotRunner) SetRuleEngine(e *router.RuleEngine) { r.ruleEngine = e }
 
 // SetPlaybooks installs the pre-rendered playbook directory used to
 // build worker system prompts and look up per-work_type entry
@@ -485,75 +494,103 @@ func parseRawBody(rawBody []byte) map[string]any {
 // WORKER.md §0; non-fatal errors are logged.
 func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) workerBootstrap {
 	bs := workerBootstrap{cardID: cardID, routerDir: r.routerDir}
-	if r.cardInfoFetcher == nil {
+	if r.cardSignalsFetcher == nil && r.cardInfoFetcher == nil {
 		r.logger.Printf("event=worker_bootstrap_skip card_id=%s reason=no_fetcher", cardID)
 		return bs
 	}
-	// Bound the classification call so a hung Trello API can't stall
+	// Bound the rule-input fetch so a hung Trello API can't stall
 	// session creation indefinitely.
 	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	firstLine, err := r.cardInfoFetcher(fetchCtx, cardID)
-	if err != nil {
-		r.logger.Printf("event=worker_bootstrap_fetch_failed card_id=%s err=%v", cardID, err)
-		return bs
+	signals := router.CardSignals{ID: cardID}
+	if r.cardSignalsFetcher != nil {
+		var err error
+		signals, err = r.cardSignalsFetcher(fetchCtx, cardID)
+		if err != nil {
+			r.logger.Printf("event=worker_bootstrap_fetch_failed card_id=%s err=%v", cardID, err)
+			return bs
+		}
+		if signals.ID == "" {
+			signals.ID = cardID
+		}
+	} else {
+		firstLine, err := r.cardInfoFetcher(fetchCtx, cardID)
+		if err != nil {
+			r.logger.Printf("event=worker_bootstrap_fetch_failed card_id=%s err=%v", cardID, err)
+			return bs
+		}
+		signals.FirstLine = firstLine
 	}
-	bs.firstLine = firstLine
-	bs.classification = ClassifyCard(firstLine)
-	r.logger.Printf("event=worker_bootstrap_classified card_id=%s work_type=%s kind=%s owner=%s repo=%s number=%s text_bytes=%d",
-		cardID, bs.classification.WorkType, bs.classification.GitHub.ItemKind,
-		bs.classification.GitHub.Owner, bs.classification.GitHub.Repo, bs.classification.GitHub.Number, len(firstLine))
+	bs.signals = signals
+	bs.firstLine = signals.FirstLine
+	bs.classification = classifyGitHubRef(signals.FirstLine)
 	if !bs.classification.GitHub.Present() {
 		// Help operators figure out why we couldn't extract a GitHub
 		// owner/repo/number — usually because the script returned an
 		// unexpected JSON shape or the card body has no GitHub URL.
 		r.logger.Printf("event=worker_bootstrap_no_github_url card_id=%s text_preview=%q",
-			cardID, preview(firstLine, 400))
+			cardID, preview(signals.FirstLine, 400))
 	}
-	if r.routerDir == "" {
-		r.logger.Printf("event=worker_bootstrap_no_router card_id=%s", cardID)
+	if r.ruleEngine == nil {
+		r.logger.Printf("event=worker_bootstrap_no_rule_engine card_id=%s", cardID)
 		return bs
 	}
-	playbook := EntryPlaybookFilename(bs.classification)
-	if playbook == "" {
-		r.logger.Printf("event=worker_bootstrap_no_playbook card_id=%s work_type=%s kind=%s",
-			cardID, bs.classification.WorkType, bs.classification.GitHub.ItemKind)
+	match, ok := r.ruleEngine.Match(signals)
+	if !ok {
 		return bs
 	}
-	bs.playbookFilename = playbook
+	bs.classification.RuleName = match.RuleName
+	bs.ruleName = match.RuleName
+	bs.promptNames = append([]string(nil), match.PromptNames...)
+	r.logger.Printf("event=worker_bootstrap_rule_matched card_id=%s rule=%s prompt_count=%d kind=%s owner=%s repo=%s number=%s text_bytes=%d",
+		cardID, match.RuleName, len(match.PromptNames), bs.classification.GitHub.ItemKind,
+		bs.classification.GitHub.Owner, bs.classification.GitHub.Repo, bs.classification.GitHub.Number, len(signals.FirstLine))
+	if len(match.PromptNames) == 0 {
+		r.logger.Printf("event=worker_bootstrap_no_playbook card_id=%s rule=%s", cardID, match.RuleName)
+		return bs
+	}
 
 	// Prefer the pre-rendered copy in the playbooks temp dir (where any
 	// `{{<basename>}}` cross-references have already been substituted to
 	// absolute paths). Fall back to the legacy <router-dir>/<playbook>
 	// path so operators that run without --playbooks-dir wired up still
 	// get an entry playbook (just without template substitution).
-	if r.playbooks != nil {
-		if path, ok := r.playbooks.Path(playbook); ok {
-			content, rerr := r.playbooks.Read(playbook)
-			if rerr != nil {
-				r.logger.Printf("event=worker_bootstrap_playbook_read_failed card_id=%s path=%s err=%v",
-					cardID, path, rerr)
-				return bs
+	for _, playbook := range match.PromptNames {
+		if r.playbooks != nil {
+			if path, ok := r.playbooks.Path(playbook); ok {
+				content, rerr := r.playbooks.Read(playbook)
+				if rerr != nil {
+					r.logger.Printf("event=worker_bootstrap_playbook_read_failed card_id=%s path=%s err=%v",
+						cardID, path, rerr)
+					continue
+				}
+				bs.playbooks = append(bs.playbooks, workerPlaybook{Name: playbook, Path: path, Content: content})
+				r.logger.Printf("event=worker_bootstrap_playbook_ready card_id=%s rule=%s playbook=%s playbook_bytes=%d source=playbooks_tempdir",
+					cardID, match.RuleName, playbook, len(content))
+				continue
 			}
-			bs.playbookPath = path
-			bs.playbookContent = content
-			r.logger.Printf("event=worker_bootstrap_ready card_id=%s work_type=%s kind=%s playbook=%s playbook_bytes=%d source=playbooks_tempdir",
-				cardID, bs.classification.WorkType, bs.classification.GitHub.ItemKind, playbook, len(content))
-			return bs
 		}
+		if r.routerDir == "" {
+			r.logger.Printf("event=worker_bootstrap_playbook_read_failed card_id=%s playbook=%s err=%v",
+				cardID, playbook, "router dir is empty")
+			continue
+		}
+		playbookPath := filepath.Join(r.routerDir, playbook)
+		content, rerr := os.ReadFile(playbookPath)
+		if rerr != nil {
+			r.logger.Printf("event=worker_bootstrap_playbook_read_failed card_id=%s path=%s err=%v",
+				cardID, playbookPath, rerr)
+			continue
+		}
+		bs.playbooks = append(bs.playbooks, workerPlaybook{Name: playbook, Path: playbookPath, Content: string(content)})
+		r.logger.Printf("event=worker_bootstrap_playbook_ready card_id=%s rule=%s playbook=%s playbook_bytes=%d source=router_dir",
+			cardID, match.RuleName, playbook, len(content))
 	}
-
-	playbookPath := filepath.Join(r.routerDir, playbook)
-	content, rerr := os.ReadFile(playbookPath)
-	if rerr != nil {
-		r.logger.Printf("event=worker_bootstrap_playbook_read_failed card_id=%s path=%s err=%v",
-			cardID, playbookPath, rerr)
+	if len(bs.playbooks) == 0 {
 		return bs
 	}
-	bs.playbookPath = playbookPath
-	bs.playbookContent = string(content)
-	r.logger.Printf("event=worker_bootstrap_ready card_id=%s work_type=%s kind=%s playbook=%s playbook_bytes=%d source=router_dir",
-		cardID, bs.classification.WorkType, bs.classification.GitHub.ItemKind, playbook, len(content))
+	r.logger.Printf("event=worker_bootstrap_ready card_id=%s rule=%s prompt_count=%d",
+		cardID, match.RuleName, len(bs.playbooks))
 	return bs
 }
 
@@ -561,13 +598,20 @@ func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) wo
 // payload assembled at session-creation time and rendered into the
 // CARD CONTEXT section of the worker's system prompt.
 type workerBootstrap struct {
-	cardID           string
-	routerDir        string
-	firstLine        string
-	classification   CardClassification
-	playbookFilename string
-	playbookPath     string
-	playbookContent  string
+	cardID         string
+	routerDir      string
+	firstLine      string
+	signals        router.CardSignals
+	classification CardClassification
+	ruleName       string
+	promptNames    []string
+	playbooks      []workerPlaybook
+}
+
+type workerPlaybook struct {
+	Name    string
+	Path    string
+	Content string
 }
 
 // assembleWorkerSystemPrompt builds the per-card worker system prompt:
@@ -635,7 +679,7 @@ func buildCardContext(bs workerBootstrap, view *kanban.Resolved) string {
 	var b strings.Builder
 	b.WriteString("You have been spawned by the Trello webhook gateway as the dedicated worker ")
 	b.WriteString("for the following card. This metadata is authoritative — do not infer card_id, ")
-	b.WriteString("work_type, or work_dir from any other source. The gateway has already prepared ")
+	b.WriteString("matched_rule, or work_dir from any other source. The gateway has already prepared ")
 	b.WriteString("work_dir for you (mkdir + `git clone --depth 1` when a github_repo is attached) ")
 	b.WriteString("and fired every registered work_dir hook before this session was created — do ")
 	b.WriteString("NOT re-run `git clone` or recreate the directory yourself.\n\n")
@@ -645,8 +689,8 @@ func buildCardContext(bs workerBootstrap, view *kanban.Resolved) string {
 	b.WriteString(bs.cardID)
 	b.WriteString("\n")
 
-	if bs.classification.WorkType != "" {
-		fmt.Fprintf(&b, "- work_type: %s\n", bs.classification.WorkType)
+	if bs.ruleName != "" {
+		fmt.Fprintf(&b, "- matched_rule: %s\n", bs.ruleName)
 	}
 	if bs.classification.GitHub.ItemKind != "" {
 		fmt.Fprintf(&b, "- kind: %s\n", bs.classification.GitHub.ItemKind)
@@ -660,8 +704,8 @@ func buildCardContext(bs workerBootstrap, view *kanban.Resolved) string {
 	if bs.classification.GitHub.URL != "" {
 		fmt.Fprintf(&b, "- github_url: %s\n", bs.classification.GitHub.URL)
 	}
-	if bs.playbookFilename != "" {
-		fmt.Fprintf(&b, "- entry_playbook: %s\n", bs.playbookPath)
+	for _, pb := range bs.playbooks {
+		fmt.Fprintf(&b, "- rule_playbook: %s\n", pb.Path)
 	}
 
 	// Resolved kanban view: one `kanban_<role>_id` line per role plus a
@@ -682,26 +726,29 @@ func buildCardContext(bs workerBootstrap, view *kanban.Resolved) string {
 
 	b.WriteString("\n")
 
-	if bs.playbookContent != "" {
-		b.WriteString("The gateway has already classified your card and inlined the entry playbook ")
+	if len(bs.playbooks) > 0 {
+		b.WriteString("The gateway has already matched your card against an HCL rule and inlined the rule playbook(s) ")
 		b.WriteString("below — treat it as authoritative system-prompt-grade guidance and do not ")
-		b.WriteString("re-derive `work_type` yourself. On your first turn just `git clone --depth 1` ")
+		b.WriteString("re-derive the rule yourself. On your first turn just `git clone --depth 1` ")
 		b.WriteString("the repo into work_dir (skip if already present), then proceed straight into ")
-		b.WriteString("the workflow defined by the inlined playbook.\n\n")
-		fmt.Fprintf(&b, "## ENTRY PLAYBOOK — %s\n\n", bs.playbookFilename)
-		b.WriteString(bs.playbookContent)
-		if !strings.HasSuffix(bs.playbookContent, "\n") {
+		b.WriteString("the workflow defined by the inlined playbook(s).\n\n")
+		for _, pb := range bs.playbooks {
+			fmt.Fprintf(&b, "## RULE PLAYBOOK — %s\n\n", pb.Name)
+			b.WriteString(pb.Content)
+			if !strings.HasSuffix(pb.Content, "\n") {
+				b.WriteString("\n")
+			}
 			b.WriteString("\n")
 		}
 	} else {
 		// Fallback path: gateway could not classify the card or no
-		// playbook is registered for this work_type. The worker must
+		// playbook is registered for this rule. The worker must
 		// follow the legacy WORKER.md §0 self-bootstrap procedure.
 		b.WriteString("The gateway could not pre-classify this card, or no entry playbook is ")
-		b.WriteString("registered for its work_type. Fall back to the WORKER.md §0 self-bootstrap ")
+		b.WriteString("registered for its matched rule. Fall back to the WORKER.md §0 self-bootstrap ")
 		b.WriteString("procedure: run `trello-get-card-info.ps1 -CardId ")
 		b.WriteString(bs.cardID)
-		b.WriteString("`, derive work_type from the firstLine, and `view` the matching entry ")
+		b.WriteString("`, inspect the firstLine, and `view` the matching entry ")
 		b.WriteString("file under the workspace-trello-router directory.\n")
 	}
 	return b.String()

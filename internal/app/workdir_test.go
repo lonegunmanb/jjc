@@ -63,9 +63,7 @@ func newPreparerForTest(t *testing.T) (*WorkDirPreparer, *stubGitRunner) {
 func TestPrepareCreatesDirectoryWithoutGitHubRepo(t *testing.T) {
 	p, git := newPreparerForTest(t)
 
-	info, err := p.Prepare(context.Background(), "card-generic", CardClassification{
-		WorkType: WorkTypeGeneric,
-	})
+	info, err := p.Prepare(context.Background(), "card-generic", CardClassification{})
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
@@ -86,7 +84,6 @@ func TestPrepareCreatesDirectoryWithoutGitHubRepo(t *testing.T) {
 func TestPrepareClonesWhenGitHubRepoPresent(t *testing.T) {
 	p, git := newPreparerForTest(t)
 	c := CardClassification{
-		WorkType: WorkTypeProviderAzureRM,
 		GitHub: GitHubRef{
 			ItemKind: GitHubItemKindIssue,
 			Owner:    "hashicorp",
@@ -127,7 +124,6 @@ func TestPrepareClonesWhenGitHubRepoPresent(t *testing.T) {
 func TestPrepareSkipsCloneWhenGitDirExists(t *testing.T) {
 	p, git := newPreparerForTest(t)
 	c := CardClassification{
-		WorkType: WorkTypeProviderAzureRM,
 		GitHub: GitHubRef{
 			ItemKind: GitHubItemKindIssue,
 			Owner:    "hashicorp",
@@ -166,7 +162,6 @@ func TestPrepareCloneFailureIsRecordedNotReturned(t *testing.T) {
 	p, git := newPreparerForTest(t)
 	git.err = errors.New("network down")
 	c := CardClassification{
-		WorkType: WorkTypeProviderAzureRM,
 		GitHub: GitHubRef{
 			ItemKind: GitHubItemKindIssue,
 			Owner:    "hashicorp",
@@ -194,9 +189,9 @@ func TestHooksRunInOrderWithFullInfo(t *testing.T) {
 	p, _ := newPreparerForTest(t)
 
 	var (
-		mu      sync.Mutex
-		order   []int
-		seen    []WorkDirInfo
+		mu    sync.Mutex
+		order []int
+		seen  []WorkDirInfo
 	)
 	for i := 0; i < 3; i++ {
 		idx := i
@@ -210,7 +205,6 @@ func TestHooksRunInOrderWithFullInfo(t *testing.T) {
 	}
 
 	c := CardClassification{
-		WorkType: WorkTypeProviderAzureRM,
 		GitHub: GitHubRef{
 			ItemKind: GitHubItemKindIssue,
 			Owner:    "hashicorp",

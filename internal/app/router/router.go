@@ -9,11 +9,10 @@
 // semantics are: top-down, first `when == true` wins — exactly the
 // switch ordering routing.go encodes today.
 //
-// The engine only owns the `route {}` blocks. The sibling `kanban {}`
-// block continues to live in internal/app/kanban; `rule {}` blocks
-// will live in their own package once issue lonegunmanb/trello-copilot#7
-// lands. The HCL decoder here uses PartialContent so the same
-// router.hcl can carry all three block kinds.
+// The route engine owns `route {}` blocks. The sibling `kanban {}` block
+// continues to live in internal/app/kanban, and this package also owns the
+// `rule {}` engine used for card prompt selection. The HCL decoders use
+// PartialContent so the same router.hcl can carry all three block kinds.
 //
 // Failure modes:
 //

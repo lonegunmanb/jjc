@@ -167,7 +167,7 @@ func resolveAzureRMIssueNumber(ctx context.Context, info WorkDirInfo, fetcher Ca
 	if err != nil {
 		return "", fmt.Errorf("fetch card info: %w", err)
 	}
-	cls := ClassifyCard(text)
+	cls := classifyGitHubRef(text)
 	if n := strings.TrimSpace(cls.GitHub.Number); n != "" {
 		return n, nil
 	}

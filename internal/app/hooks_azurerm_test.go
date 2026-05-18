@@ -169,7 +169,6 @@ func TestAzureRMRefreshHookInvokesRefresherWithExpectedOptions(t *testing.T) {
 		CardID:  "69fbf8b2fa478054c540d2d3",
 		WorkDir: dir,
 		Classification: CardClassification{
-			WorkType: WorkTypeProviderAzureRM,
 			GitHub: GitHubRef{
 				ItemKind: GitHubItemKindIssue,
 				Owner:    "hashicorp",
@@ -300,7 +299,6 @@ func TestAzureRMRefreshHookInvokesRefresherForPRCard(t *testing.T) {
 		CardID:  "pr-card",
 		WorkDir: dir,
 		Classification: CardClassification{
-			WorkType: WorkTypeProviderAzureRM,
 			GitHub: GitHubRef{
 				ItemKind: GitHubItemKindPR, // <-- the critical difference vs. the issue-card test
 				Owner:    "hashicorp",
@@ -330,7 +328,7 @@ func TestAzureRMRefreshHookInvokesRefresherForPRCard(t *testing.T) {
 // instead of hallucinating an issue number. We drive the unclassified
 // fallback path by leaving Classification empty and supplying a
 // CardInfoFetcher that returns a non-GitHub URL; the in-process
-// ClassifyCard then returns an empty Number and the hook is expected
+// classifyGitHubRef then returns an empty Number and the hook is expected
 // to log the skip and return nil.
 func TestAzureRMRefreshHookSkipsForNonGitHubReferenceCard(t *testing.T) {
 	rec := &refresherRecorder{}

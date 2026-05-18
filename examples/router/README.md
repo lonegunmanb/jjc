@@ -6,14 +6,12 @@ different stages of completeness:
 | Layer | What it covers | Status |
 |---|---|---|
 | `--playbooks-dir` (this layer) | Loading and pre-rendering the per-card playbook `.md` files. | **Implemented** (see `internal/app/prompttmpl/`). |
-| HCL router (`router.hcl`) | `kanban {}` shape, `route {}` event routing, `rule {}` playbook selection, `github_issue` HCL function. | **Proposal** (not wired in yet). Today the gateway uses `internal/app/routing.go` + `internal/app/worktype.go` for these decisions. |
+| HCL router (`router.hcl`) | `kanban {}` shape, `route {}` event routing, `rule {}` playbook selection, `github_issue` HCL function. | **Implemented** (see `internal/app/kanban/` and `internal/app/router/`). |
 
 Files in this folder:
 
-- [router.hcl](./router.hcl) — full HCL spec proposal (kanban / route /
-  rule / `github_issue`). Not loaded by the running gateway today; it
-  documents the target shape so reviewers can read what the routing
-  layer is supposed to look like once issues #5 / #6 / #7 land.
+- [router.hcl](./router.hcl) — sample HCL config (kanban / route /
+  rule / `github_issue`) loaded by the gateway from `--router-dir/router.hcl`.
 
 The actual in-repo collection of playbook `.md` files lives **outside this
 folder**, at the workspace root: [../../playbook/](../../playbook/). Point
@@ -149,30 +147,21 @@ trello-openclaw-webhook-gateway.exe
 
 ---
 
-## The HCL router (proposal — not implemented)
+## The HCL router
 
-[router.hcl](./router.hcl) shows what `--router-dir/router.hcl` would
-look like once the HCL-based router is implemented. It introduces three
-blocks:
+[router.hcl](./router.hcl) shows the shape of `--router-dir/router.hcl`.
+It introduces three blocks:
 
 1. `kanban {}` — names the Trello lists by **role** (plan, action,
    wait.\*, done) so prompts can talk about roles instead of column
    names.
-2. `route {}` — replaces today's hard-coded
-   [../../internal/app/routing.go](../../internal/app/routing.go);
-   decides whether each Trello webhook event should be dropped,
+2. `route {}` — decides whether each Trello webhook event should be dropped,
    dispatched, sent as a departure notice, or treated as a terminate
    signal.
-3. `rule {}` — replaces today's hard-coded
-   [../../internal/app/worktype.go](../../internal/app/worktype.go);
-   given a matched card, picks which playbook(s) to feed to the worker.
+3. `rule {}` — given a matched card, picks which playbook(s) to feed to the worker.
    Playbook names are bare basenames (same convention as `{{...}}`
    above) and the engine resolves them through the `--playbooks-dir`
    renderer described in the previous section.
-
-Until the HCL router lands, the playbook chosen for each card is still
-decided by `EntryPlaybookFilename` in
-[../../internal/app/worktype.go](../../internal/app/worktype.go).
 
 ### Tracking issues
 
