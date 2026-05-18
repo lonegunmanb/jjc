@@ -161,7 +161,8 @@ func TestLoadConfigRouterDirRequired(t *testing.T) {
 	t.Setenv("TRELLO_GATEWAY_TUNNEL", "none")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
-	// Intentionally do NOT set WORKSPACE_TRELLO_ROUTER_DIR.
+	// Explicitly empty WORKSPACE_TRELLO_ROUTER_DIR to prove there is no
+	// fallback default.
 	t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "")
 
 	_, err := LoadConfig([]string{"cmd"})
