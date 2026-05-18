@@ -106,14 +106,14 @@ func DecodeRuleConfig(src []byte, filename, playbooksDir string) (RuleConfig, er
 				r.Name, b.DefRange, prev)
 		}
 		seen[r.Name] = b.DefRange
+		if len(r.Prompts) > 0 && playbooksDir == "" {
+			return RuleConfig{}, fmt.Errorf("router: rule %q prompts cannot be validated: playbooks dir is empty",
+				r.Name)
+		}
 		for _, prompt := range r.Prompts {
 			if err := validatePromptName(prompt); err != nil {
 				return RuleConfig{}, fmt.Errorf("router: rule %q at %s has invalid prompt %q: %w",
 					r.Name, b.DefRange, prompt, err)
-			}
-			if playbooksDir == "" {
-				return RuleConfig{}, fmt.Errorf("router: rule %q prompt %q cannot be validated: playbooks dir is empty",
-					r.Name, prompt)
 			}
 			path := filepath.Join(playbooksDir, prompt)
 			info, err := os.Stat(path)
