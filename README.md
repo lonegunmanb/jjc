@@ -63,7 +63,7 @@ Both CLI flags and environment variables are supported. CLI flags take precedenc
 | `--callback-url` | `CALLBACK_URL` | | only with `--tunnel=none` | Public webhook callback URL registered in Trello. Must exactly match the URL Trello signs. Rejected with the default auto-tunnel path. |
 | `--tunnel` | `TRELLO_GATEWAY_TUNNEL` | `cloudflared` | | Tunnel provider. `cloudflared` starts a TryCloudflare quick tunnel, waits for its public URL, reconciles the Trello board webhook, and uses that URL for signature verification. `none` disables auto-tunnel/webhook management and requires `--callback-url`. |
 | `--copilot-model` | `COPILOT_MODEL` | `claude-opus-4.6-1m` | | Copilot model name used for worker sessions. |
-| `--router-dir` | `WORKSPACE_TRELLO_ROUTER_DIR` | `C:\Users\zjhe\.openclaw\workspace-trello-router` | **yes** | Directory containing `router.hcl` and the legacy `scripts/` helpers. |
+| `--router-dir` | `WORKSPACE_TRELLO_ROUTER_DIR` | | **yes** | Directory containing `router.hcl`. |
 | `--playbooks-dir` | `TRELLO_PLAYBOOKS_DIR` | `<cwd>/.playbooks` | **yes** | Directory containing the `.md` playbook files. Must exist and be a directory; missing files referenced via `{{<basename>}}` fail startup. |
 | `--kanban-board-id` | `TRELLO_KANBAN_BOARD_ID` | | **yes** | Trello board id (24-hex string from the board URL). The kanban `{}` block in `router.hcl` is resolved against this board's lists at startup. |
 

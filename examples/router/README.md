@@ -76,7 +76,7 @@ Leave these alone — they have nothing to do with the playbooks temp dir:
 - External URLs (`https://github.com/...`).
 - Files that live inside the worker's `work_dir` (the cloned repo), e.g.
   `go.mod`, `README.md`, `.github/instructions/*.instructions.md`.
-- Helper scripts (`scripts/trello-log-event.ps1`).
+- Runtime files managed by the gateway itself, such as per-worker activity logs.
 - Glob patterns or pure narrative mentions of file names.
 
 > **Deprecation note: `<router-dir>/scripts/refresh-copilot-setup.ps1` is no
@@ -90,10 +90,8 @@ Leave these alone — they have nothing to do with the playbooks temp dir:
 > Windows, `bash + install-copilot-setup.sh` on macOS / Linux. The
 > refresh is synchronous (no LLM turn, no spawned session) and works on
 > any OS where `git` is on `$PATH` and either `pwsh` or `bash` is
-> available. The legacy `refresh-copilot-setup.ps1` file under
-> `<router-dir>/scripts/` is kept for one release for backwards
-> compatibility but is no longer invoked by the gateway and will be
-> removed in a follow-up release.
+> available. Legacy helper scripts under `<router-dir>/scripts/` are no
+> longer invoked by the gateway.
 
 ---
 

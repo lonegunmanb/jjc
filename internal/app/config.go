@@ -22,13 +22,9 @@ type Config struct {
 	CallbackURL    string
 	Tunnel         string
 	CopilotModel   string
-	// RouterDir is the directory containing legacy trello helper scripts
-	// under scripts/ (e.g. trello-log-event.ps1). Entry playbooks no
-	// longer live here — they are loaded from PlaybooksDir and
-	// pre-rendered into a process-temp directory at startup. The
-	// previous refresh-copilot-setup.ps1 wrapper has been replaced by
-	// the in-process aiassistedrefresh package wired in main.go and is
-	// no longer required for the AzureRM provider work_dir hook.
+	// RouterDir is the directory containing router.hcl. Entry playbooks
+	// no longer live here — they are loaded from PlaybooksDir and
+	// pre-rendered into a process-temp directory at startup.
 	RouterDir string
 	// PlaybooksDir is the directory holding all .md playbook files
 	// (skeleton prompts and entry playbooks). Every .md file under it is
@@ -48,11 +44,6 @@ type Config struct {
 	KanbanBoardID string
 }
 
-// DefaultRouterDir is the conventional location of the workspace-trello-router
-// checkout on the operator's machine. Override via WORKSPACE_TRELLO_ROUTER_DIR
-// or --router-dir.
-const DefaultRouterDir = `C:\Users\zjhe\.openclaw\workspace-trello-router`
-
 // DefaultPlaybooksDirName is the conventional default basename of the
 // playbooks source directory, looked up under the process's current
 // working directory. Override via TRELLO_PLAYBOOKS_DIR or --playbooks-dir.
@@ -67,7 +58,7 @@ func LoadConfig(args []string) (Config, error) {
 		CallbackURL:    os.Getenv("CALLBACK_URL"),
 		Tunnel:         envOrDefault("TRELLO_GATEWAY_TUNNEL", tunnel.Cloudflared),
 		CopilotModel:   envOrDefault("COPILOT_MODEL", DefaultCopilotModel),
-		RouterDir:      envOrDefault("WORKSPACE_TRELLO_ROUTER_DIR", DefaultRouterDir),
+		RouterDir:      os.Getenv("WORKSPACE_TRELLO_ROUTER_DIR"),
 		PlaybooksDir:   envOrDefault("TRELLO_PLAYBOOKS_DIR", defaultPlaybooksDir()),
 		KanbanBoardID:  os.Getenv("TRELLO_KANBAN_BOARD_ID"),
 	}
@@ -80,7 +71,7 @@ func LoadConfig(args []string) (Config, error) {
 	fs.StringVar(&cfg.CallbackURL, "callback-url", cfg.CallbackURL, "webhook callback URL used for signature verification")
 	fs.StringVar(&cfg.Tunnel, "tunnel", cfg.Tunnel, "tunnel provider: cloudflared or none")
 	fs.StringVar(&cfg.CopilotModel, "copilot-model", cfg.CopilotModel, "Copilot model to use for the agent session")
-	fs.StringVar(&cfg.RouterDir, "router-dir", cfg.RouterDir, "directory containing trello helper scripts under scripts/")
+	fs.StringVar(&cfg.RouterDir, "router-dir", cfg.RouterDir, "directory containing router.hcl")
 	fs.StringVar(&cfg.PlaybooksDir, "playbooks-dir", cfg.PlaybooksDir, "directory containing playbook .md files (default <cwd>/.playbooks)")
 	fs.StringVar(&cfg.KanbanBoardID, "kanban-board-id", cfg.KanbanBoardID, "Trello board id whose lists the kanban {} block in router.hcl is resolved against")
 
@@ -122,6 +113,9 @@ func validateConfig(cfg Config) error {
 	}
 	if cfg.CopilotModel == "" {
 		return errors.New("missing copilot model, set --copilot-model or COPILOT_MODEL")
+	}
+	if cfg.RouterDir == "" {
+		return errors.New("missing router dir, set --router-dir or WORKSPACE_TRELLO_ROUTER_DIR")
 	}
 	if cfg.PlaybooksDir == "" {
 		return errors.New("missing playbooks dir, set --playbooks-dir or TRELLO_PLAYBOOKS_DIR")

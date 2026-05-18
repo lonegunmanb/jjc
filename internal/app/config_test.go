@@ -28,6 +28,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("TRELLO_GATEWAY_TUNNEL", "none")
 	t.Setenv("COPILOT_MODEL", "env-model")
+	t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "env-router")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
 
@@ -54,6 +55,9 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	if cfg.CopilotModel != "env-model" {
 		t.Fatalf("unexpected copilot model: %s", cfg.CopilotModel)
 	}
+	if cfg.RouterDir != "env-router" {
+		t.Fatalf("unexpected router dir: %s", cfg.RouterDir)
+	}
 	if cfg.KanbanBoardID != "env-board" {
 		t.Fatalf("unexpected kanban board id: %s", cfg.KanbanBoardID)
 	}
@@ -67,10 +71,11 @@ func TestLoadConfigFlagOverridesEnv(t *testing.T) {
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("TRELLO_GATEWAY_TUNNEL", "none")
 	t.Setenv("COPILOT_MODEL", "env-model")
+	t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "env-router")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
 
-	cfg, err := LoadConfig([]string{"cmd", "--listen", ":8088", "--trello-api-secret", "flag-secret", "--copilot-model", "flag-model", "--kanban-board-id", "flag-board"})
+	cfg, err := LoadConfig([]string{"cmd", "--listen", ":8088", "--trello-api-secret", "flag-secret", "--copilot-model", "flag-model", "--router-dir", "flag-router", "--kanban-board-id", "flag-board"})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -83,6 +88,9 @@ func TestLoadConfigFlagOverridesEnv(t *testing.T) {
 	}
 	if cfg.CopilotModel != "flag-model" {
 		t.Fatalf("expected copilot model from flag, got %s", cfg.CopilotModel)
+	}
+	if cfg.RouterDir != "flag-router" {
+		t.Fatalf("expected router dir from flag, got %s", cfg.RouterDir)
 	}
 	if cfg.KanbanBoardID != "flag-board" {
 		t.Fatalf("expected kanban board id from flag, got %s", cfg.KanbanBoardID)
@@ -100,6 +108,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("TRELLO_API_SECRET", "env-secret")
 	t.Setenv("TRELLO_API_KEY", "env-key")
 	t.Setenv("TRELLO_API_TOKEN", "env-token")
+	t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "env-router")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
 
@@ -120,6 +129,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.CallbackURL != "" {
 		t.Fatalf("callback URL should be empty before auto-tunnel starts, got %q", cfg.CallbackURL)
 	}
+	if cfg.RouterDir != "env-router" {
+		t.Fatalf("expected router dir from env, got %q", cfg.RouterDir)
+	}
 }
 
 func TestLoadConfigPlaybooksDirMissing(t *testing.T) {
@@ -128,12 +140,36 @@ func TestLoadConfigPlaybooksDirMissing(t *testing.T) {
 	t.Setenv("TRELLO_API_TOKEN", "env-token")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("TRELLO_GATEWAY_TUNNEL", "none")
+	t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "env-router")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", filepath.Join(t.TempDir(), "does-not-exist"))
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
 
 	_, err := LoadConfig([]string{"cmd"})
 	if err == nil {
 		t.Fatal("expected error when playbooks-dir does not exist")
+	}
+}
+
+// TestLoadConfigRouterDirRequired pins the requirement that --router-dir /
+// WORKSPACE_TRELLO_ROUTER_DIR must be explicitly configured rather than
+// silently falling back to an operator-local path.
+func TestLoadConfigRouterDirRequired(t *testing.T) {
+	t.Setenv("TRELLO_API_SECRET", "env-secret")
+	t.Setenv("TRELLO_API_KEY", "env-key")
+	t.Setenv("TRELLO_API_TOKEN", "env-token")
+	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
+	t.Setenv("TRELLO_GATEWAY_TUNNEL", "none")
+	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
+	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
+	// Intentionally do NOT set WORKSPACE_TRELLO_ROUTER_DIR.
+	t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "")
+
+	_, err := LoadConfig([]string{"cmd"})
+	if err == nil {
+		t.Fatal("expected error when router dir is missing")
+	}
+	if !strings.Contains(err.Error(), "router dir") {
+		t.Fatalf("error should mention router dir: %v", err)
 	}
 }
 
@@ -145,6 +181,7 @@ func TestLoadConfigKanbanBoardIDRequired(t *testing.T) {
 	t.Setenv("TRELLO_API_TOKEN", "env-token")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("TRELLO_GATEWAY_TUNNEL", "none")
+	t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "env-router")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
 	// Intentionally do NOT set TRELLO_KANBAN_BOARD_ID.
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "")
@@ -164,6 +201,7 @@ func TestLoadConfigTunnelValidation(t *testing.T) {
 		t.Setenv("TRELLO_API_SECRET", "env-secret")
 		t.Setenv("TRELLO_API_KEY", "env-key")
 		t.Setenv("TRELLO_API_TOKEN", "env-token")
+		t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "env-router")
 		t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
 		t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
 	}
