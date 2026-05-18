@@ -151,11 +151,13 @@ func TestAssembleWorkerSystemPromptInlinesPlaybook(t *testing.T) {
 		cardID: "card-1",
 		classification: CardClassification{
 			WorkType: WorkTypeProviderAzureRM,
-			Kind:     KindIssue,
-			Owner:    "hashicorp",
-			Repo:     "terraform-provider-azurerm",
-			Number:   "32258",
-			URL:      "https://github.com/hashicorp/terraform-provider-azurerm/issues/32258",
+			GitHub: GitHubRef{
+				ItemKind: GitHubItemKindIssue,
+				Owner:    "hashicorp",
+				Repo:     "terraform-provider-azurerm",
+				Number:   "32258",
+				URL:      "https://github.com/hashicorp/terraform-provider-azurerm/issues/32258",
+			},
 		},
 		playbookFilename: "azurerm_provider_issue.md",
 		playbookPath:     `C:\fake\azurerm_provider_issue.md`,

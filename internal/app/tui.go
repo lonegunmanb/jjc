@@ -637,9 +637,9 @@ func tuiFmtTarget(st WorkerStatus) string {
 	}
 	kind := "?"
 	switch st.Kind {
-	case KindIssue:
+	case GitHubItemKindIssue:
 		kind = "issue"
-	case KindPR:
+	case GitHubItemKindPR:
 		kind = "pr"
 	}
 	if st.Number == "" {

@@ -53,7 +53,7 @@ type WorkerStatus struct {
 	// card's first description line.
 	Owner  string
 	Repo   string
-	Kind   IssueOrPR
+	Kind   GitHubItemKind
 	Number string
 
 	// WorkDir is the local filesystem directory the worker session is
@@ -316,10 +316,10 @@ func (t *ActivityTracker) RecordEvent(e copilot.SessionEvent) {
 func (t *ActivityTracker) SetClassification(c CardClassification) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.status.Owner = c.Owner
-	t.status.Repo = c.Repo
-	t.status.Kind = c.Kind
-	t.status.Number = c.Number
+	t.status.Owner = c.GitHub.Owner
+	t.status.Repo = c.GitHub.Repo
+	t.status.Kind = c.GitHub.ItemKind
+	t.status.Number = c.GitHub.Number
 }
 
 // SetWorkDir records the local working directory the SDK session was
