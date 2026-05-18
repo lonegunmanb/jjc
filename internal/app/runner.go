@@ -14,6 +14,7 @@ import (
 
 	copilot "github.com/github/copilot-sdk/go"
 
+	"github.com/lonegunmanb/trello-copilot/internal/app/kanban"
 	"github.com/lonegunmanb/trello-copilot/internal/app/prompts"
 	"github.com/lonegunmanb/trello-copilot/internal/app/prompttmpl"
 	"github.com/lonegunmanb/trello-copilot/internal/app/trelloclient"
@@ -66,6 +67,15 @@ type CopilotRunner struct {
 	// fallback in the AzureRM refresh hook). Nil is allowed — unit tests
 	// that don't need real Trello traffic skip wiring it.
 	trelloClient trelloclient.Client
+
+	// kanbanView is the resolved list-name → list-id mapping produced
+	// at startup by internal/app/kanban.LoadAndResolve. The runner
+	// inlines the per-role IDs and agent-comment prefix list into the
+	// per-card CARD CONTEXT so worker prompts can reference
+	// `kanban_*_id` directly instead of the legacy `TRELLO_*` env
+	// vars. Nil is allowed — unit tests that don't talk to Trello skip
+	// the injection.
+	kanbanView *kanban.Resolved
 
 	clientMu sync.Mutex
 	client   *copilot.Client
@@ -182,6 +192,19 @@ func (r *CopilotRunner) SetPlaybooks(p *prompttmpl.Renderer) { r.playbooks = p }
 // need to talk to Trello. Must be called before the first
 // NewWorkerSession invocation.
 func (r *CopilotRunner) SetTrelloClient(c trelloclient.Client) { r.trelloClient = c }
+
+// SetKanbanView installs the resolved kanban view (see
+// internal/app/kanban) so per-card CARD CONTEXT can inline role IDs
+// and the agent-comment prefix list. Also propagated to the dispatcher
+// so Route consults it for category decisions. Pass nil to disable
+// injection (unit tests that skip the Trello bootstrap path). Must be
+// called before the first NewWorkerSession invocation.
+func (r *CopilotRunner) SetKanbanView(view *kanban.Resolved) {
+	r.kanbanView = view
+	if r.dispatcher != nil {
+		r.dispatcher.SetKanbanView(view)
+	}
+}
 
 // Start initialises the underlying Copilot SDK client. It is safe to call
 // multiple times; subsequent calls are no-ops once the client is running.
@@ -361,7 +384,7 @@ func (r *CopilotRunner) NewWorkerSession(ctx context.Context, cardID string, tra
 	if tracker != nil {
 		tracker.SetClassification(bs.classification)
 	}
-	systemPrompt := assembleWorkerSystemPrompt(cardID, bs, r.playbooks)
+	systemPrompt := assembleWorkerSystemPrompt(cardID, bs, r.playbooks, r.kanbanView)
 	r.logger.Printf("event=worker_session_create_attempt card_id=%s model=%s system_bytes=%d",
 		cardID, r.model, len(systemPrompt))
 
@@ -554,8 +577,12 @@ type workerBootstrap struct {
 // section bodies come from the per-process pre-rendered temp directory
 // (so any `{{<basename>}}` cross-references have already been
 // substituted to absolute paths); otherwise the //go:embed snapshots in
-// internal/app/prompts are used unchanged.
-func assembleWorkerSystemPrompt(cardID string, bs workerBootstrap, playbooks *prompttmpl.Renderer) string {
+// internal/app/prompts are used unchanged. When view is non-nil the
+// CARD CONTEXT section additionally lists the resolved
+// `kanban_<role>_id` values and `kanban_agent_comment_prefixes` so the
+// worker can reference list IDs by stable role name without the
+// legacy `TRELLO_*` env-var bridge.
+func assembleWorkerSystemPrompt(cardID string, bs workerBootstrap, playbooks *prompttmpl.Renderer, view *kanban.Resolved) string {
 	bootstrap, identity, worker, tools, user, override := loadSkeletonPrompts(playbooks)
 	var b strings.Builder
 	if override != "" {
@@ -566,7 +593,7 @@ func assembleWorkerSystemPrompt(cardID string, bs workerBootstrap, playbooks *pr
 	writeSection(&b, "WORKER", worker)
 	writeSection(&b, "TOOLS", tools)
 	writeSection(&b, "USER", user)
-	writeSection(&b, "CARD CONTEXT", buildCardContext(bs))
+	writeSection(&b, "CARD CONTEXT", buildCardContext(bs, view))
 	return b.String()
 }
 
@@ -604,7 +631,7 @@ func readSkeleton(playbooks *prompttmpl.Renderer, name, fallback string) string 
 	return body
 }
 
-func buildCardContext(bs workerBootstrap) string {
+func buildCardContext(bs workerBootstrap, view *kanban.Resolved) string {
 	var b strings.Builder
 	b.WriteString("You have been spawned by the Trello webhook gateway as the dedicated worker ")
 	b.WriteString("for the following card. This metadata is authoritative — do not infer card_id, ")
@@ -636,6 +663,23 @@ func buildCardContext(bs workerBootstrap) string {
 	if bs.playbookFilename != "" {
 		fmt.Fprintf(&b, "- entry_playbook: %s\n", bs.playbookPath)
 	}
+
+	// Resolved kanban view: one `kanban_<role>_id` line per role plus a
+	// formatted `kanban_agent_comment_prefixes` list. WORKER.md §2
+	// references these directly; the legacy `TRELLO_*` env-var bridge
+	// has been retired (see issue #5).
+	if view != nil {
+		fmt.Fprintf(&b, "- kanban_board_id: %s\n", view.BoardID)
+		fmt.Fprintf(&b, "- kanban_plan_id: %s\n", view.Plan.ID)
+		fmt.Fprintf(&b, "- kanban_action_id: %s\n", view.Action.ID)
+		fmt.Fprintf(&b, "- kanban_wait_plan_review_id: %s\n", view.Wait.PlanReview.ID)
+		fmt.Fprintf(&b, "- kanban_wait_action_review_id: %s\n", view.Wait.ActionReview.ID)
+		fmt.Fprintf(&b, "- kanban_wait_generic_id: %s\n", view.Wait.Generic.ID)
+		fmt.Fprintf(&b, "- kanban_wait_exception_id: %s\n", view.Wait.Exception.ID)
+		fmt.Fprintf(&b, "- kanban_done_id: %s\n", view.Done.ID)
+		fmt.Fprintf(&b, "- kanban_agent_comment_prefixes: %s\n", formatAgentPrefixes(view.AgentCommentPrefixes))
+	}
+
 	b.WriteString("\n")
 
 	if bs.playbookContent != "" {
@@ -660,6 +704,23 @@ func buildCardContext(bs workerBootstrap) string {
 		b.WriteString("`, derive work_type from the firstLine, and `view` the matching entry ")
 		b.WriteString("file under the workspace-trello-router directory.\n")
 	}
+	return b.String()
+}
+
+// formatAgentPrefixes renders the AgentCommentPrefixes list as a
+// JSON-like array of quoted strings so the worker can parse it
+// unambiguously (a comma-separated bare list would be hard to read
+// when a prefix legitimately contains a comma).
+func formatAgentPrefixes(prefixes []string) string {
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, p := range prefixes {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%q", p)
+	}
+	b.WriteByte(']')
 	return b.String()
 }
 

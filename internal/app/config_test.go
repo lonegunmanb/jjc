@@ -28,6 +28,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("COPILOT_MODEL", "env-model")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
+	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
 
 	cfg, err := LoadConfig([]string{"cmd"})
 	if err != nil {
@@ -49,6 +50,9 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	if cfg.CopilotModel != "env-model" {
 		t.Fatalf("unexpected copilot model: %s", cfg.CopilotModel)
 	}
+	if cfg.KanbanBoardID != "env-board" {
+		t.Fatalf("unexpected kanban board id: %s", cfg.KanbanBoardID)
+	}
 }
 
 func TestLoadConfigFlagOverridesEnv(t *testing.T) {
@@ -59,8 +63,9 @@ func TestLoadConfigFlagOverridesEnv(t *testing.T) {
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("COPILOT_MODEL", "env-model")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
+	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
 
-	cfg, err := LoadConfig([]string{"cmd", "--listen", ":8088", "--trello-api-secret", "flag-secret", "--copilot-model", "flag-model"})
+	cfg, err := LoadConfig([]string{"cmd", "--listen", ":8088", "--trello-api-secret", "flag-secret", "--copilot-model", "flag-model", "--kanban-board-id", "flag-board"})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -73,6 +78,9 @@ func TestLoadConfigFlagOverridesEnv(t *testing.T) {
 	}
 	if cfg.CopilotModel != "flag-model" {
 		t.Fatalf("expected copilot model from flag, got %s", cfg.CopilotModel)
+	}
+	if cfg.KanbanBoardID != "flag-board" {
+		t.Fatalf("expected kanban board id from flag, got %s", cfg.KanbanBoardID)
 	}
 }
 
@@ -89,6 +97,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("TRELLO_API_TOKEN", "env-token")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
+	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
 
 	cfg, err := LoadConfig([]string{"cmd"})
 	if err != nil {
@@ -109,10 +118,31 @@ func TestLoadConfigPlaybooksDirMissing(t *testing.T) {
 	t.Setenv("TRELLO_API_TOKEN", "env-token")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", filepath.Join(t.TempDir(), "does-not-exist"))
+	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
 
 	_, err := LoadConfig([]string{"cmd"})
 	if err == nil {
 		t.Fatal("expected error when playbooks-dir does not exist")
+	}
+}
+
+// TestLoadConfigKanbanBoardIDRequired pins the issue's requirement that
+// startup fails if --kanban-board-id / TRELLO_KANBAN_BOARD_ID is empty.
+func TestLoadConfigKanbanBoardIDRequired(t *testing.T) {
+	t.Setenv("TRELLO_API_SECRET", "env-secret")
+	t.Setenv("TRELLO_API_KEY", "env-key")
+	t.Setenv("TRELLO_API_TOKEN", "env-token")
+	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
+	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
+	// Intentionally do NOT set TRELLO_KANBAN_BOARD_ID.
+	t.Setenv("TRELLO_KANBAN_BOARD_ID", "")
+
+	_, err := LoadConfig([]string{"cmd"})
+	if err == nil {
+		t.Fatal("expected error when kanban board id is missing")
+	}
+	if !strings.Contains(err.Error(), "kanban board id") {
+		t.Fatalf("error should mention kanban board id: %v", err)
 	}
 }
 
@@ -133,6 +163,7 @@ func TestRedactedDoesNotLeakPrefix(t *testing.T) {
 		CopilotModel:   "m",
 		RouterDir:      "r",
 		PlaybooksDir:   "p",
+		KanbanBoardID:  "b",
 	}
 	out := c.Redacted()
 	for _, secret := range []string{c.TrelloSecret, c.TrelloAPIKey, c.TrelloAPIToken} {
@@ -167,6 +198,7 @@ func TestRedactedCoversEverySensitiveField(t *testing.T) {
 		CopilotModel:   "model",
 		RouterDir:      "router",
 		PlaybooksDir:   "playbooks",
+		KanbanBoardID:  "board",
 	}
 	out := c.Redacted()
 
@@ -217,6 +249,7 @@ func TestRedactedMentionsEveryNonSensitiveField(t *testing.T) {
 		CopilotModel:   "REDACTED_TEST_MODEL",
 		RouterDir:      "REDACTED_TEST_ROUTER",
 		PlaybooksDir:   "REDACTED_TEST_PLAYBOOKS",
+		KanbanBoardID:  "REDACTED_TEST_BOARD",
 	}
 	out := c.Redacted()
 	sensitive := []string{"secret", "token", "password", "api"}

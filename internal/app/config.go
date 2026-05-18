@@ -36,6 +36,13 @@ type Config struct {
 	// fail with event=playbook_render_failed. Override via
 	// TRELLO_PLAYBOOKS_DIR or --playbooks-dir.
 	PlaybooksDir string
+	// KanbanBoardID is the Trello board the gateway resolves list
+	// names against at startup (see internal/app/kanban). Sourced from
+	// --kanban-board-id / TRELLO_KANBAN_BOARD_ID. Required: an empty
+	// value fails validation with a clear error so a misconfigured
+	// deployment never silently routes events with an un-resolved
+	// kanban view.
+	KanbanBoardID string
 }
 
 // DefaultRouterDir is the conventional location of the workspace-trello-router
@@ -58,6 +65,7 @@ func LoadConfig(args []string) (Config, error) {
 		CopilotModel:   envOrDefault("COPILOT_MODEL", DefaultCopilotModel),
 		RouterDir:      envOrDefault("WORKSPACE_TRELLO_ROUTER_DIR", DefaultRouterDir),
 		PlaybooksDir:   envOrDefault("TRELLO_PLAYBOOKS_DIR", defaultPlaybooksDir()),
+		KanbanBoardID:  os.Getenv("TRELLO_KANBAN_BOARD_ID"),
 	}
 
 	fs := flag.NewFlagSet("gateway", flag.ContinueOnError)
@@ -69,6 +77,7 @@ func LoadConfig(args []string) (Config, error) {
 	fs.StringVar(&cfg.CopilotModel, "copilot-model", cfg.CopilotModel, "Copilot model to use for the agent session")
 	fs.StringVar(&cfg.RouterDir, "router-dir", cfg.RouterDir, "directory containing trello helper scripts under scripts/")
 	fs.StringVar(&cfg.PlaybooksDir, "playbooks-dir", cfg.PlaybooksDir, "directory containing playbook .md files (default <cwd>/.playbooks)")
+	fs.StringVar(&cfg.KanbanBoardID, "kanban-board-id", cfg.KanbanBoardID, "Trello board id whose lists the kanban {} block in router.hcl is resolved against")
 
 	if err := fs.Parse(args[1:]); err != nil {
 		return Config{}, err
@@ -100,6 +109,9 @@ func validateConfig(cfg Config) error {
 	if cfg.PlaybooksDir == "" {
 		return errors.New("missing playbooks dir, set --playbooks-dir or TRELLO_PLAYBOOKS_DIR")
 	}
+	if cfg.KanbanBoardID == "" {
+		return errors.New("missing kanban board id, set --kanban-board-id or TRELLO_KANBAN_BOARD_ID")
+	}
 	info, err := os.Stat(cfg.PlaybooksDir)
 	if err != nil {
 		return fmt.Errorf("playbooks-dir %q invalid: %w", cfg.PlaybooksDir, err)
@@ -127,8 +139,8 @@ func envOrDefault(key, fallback string) string {
 }
 
 func (c Config) Redacted() string {
-	return fmt.Sprintf("listen=%s callback_url=%s copilot_model=%s router_dir=%s playbooks_dir=%s trello_api_secret=%s trello_api_key=%s trello_api_token=%s",
-		c.ListenAddr, c.CallbackURL, c.CopilotModel, c.RouterDir, c.PlaybooksDir,
+	return fmt.Sprintf("listen=%s callback_url=%s copilot_model=%s router_dir=%s playbooks_dir=%s kanban_board_id=%s trello_api_secret=%s trello_api_key=%s trello_api_token=%s",
+		c.ListenAddr, c.CallbackURL, c.CopilotModel, c.RouterDir, c.PlaybooksDir, c.KanbanBoardID,
 		redact(c.TrelloSecret), redact(c.TrelloAPIKey), redact(c.TrelloAPIToken))
 }
 

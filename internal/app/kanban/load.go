@@ -1,0 +1,68 @@
+package kanban
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+)
+
+// LoadAndResolve is the single entry point main wires at startup. It
+//
+//  1. Parses the `kanban {}` block out of router.hcl at hclPath.
+//  2. Asks fetcher for the open lists on boardID.
+//  3. Resolves every role name to a unique board list ID.
+//  4. Logs every unclaimed board list as a WARN-style line (see the
+//     issue's "Board lists not claimed by any role → default to wait
+//     category" decision).
+//
+// boardID must be non-empty; an empty value returns an error that the
+// caller can log as `event=kanban_board_id_missing`. A failure inside
+// the Trello fetch is returned wrapped so the caller can log it as
+// `event=trello_board_lists_fetch_failed`. A failure inside Resolve is
+// a *ResolveError suitable for `event=kanban_resolve_failed`.
+//
+// `logger` may be nil; the function defaults to log.Default() for the
+// unclaimed-list WARN lines.
+func LoadAndResolve(ctx context.Context, hclPath, boardID string, fetcher BoardListsFetcher, logger *log.Logger) (*Resolved, error) {
+	if boardID == "" {
+		return nil, errors.New("kanban: board_id is empty")
+	}
+	if fetcher == nil {
+		return nil, errors.New("kanban: fetcher is nil")
+	}
+	if logger == nil {
+		logger = log.Default()
+	}
+
+	cfg, err := LoadConfig(hclPath)
+	if err != nil {
+		return nil, err
+	}
+
+	lists, err := fetcher.ListBoardLists(ctx, boardID)
+	if err != nil {
+		return nil, fmt.Errorf("kanban: fetch board lists: %w", err)
+	}
+
+	resolved, err := Resolve(boardID, cfg, lists)
+	if err != nil {
+		return nil, err
+	}
+
+	// Issue requirement: log every unclaimed board list at startup so
+	// the operator notices a board column that no role claimed.
+	for _, name := range resolved.UnclaimedListNames {
+		// Find the matching list ID for the log line. Cheap nested
+		// loop — UnclaimedListNames is tiny in practice.
+		for _, l := range lists {
+			if l.Name == name {
+				logger.Printf("event=kanban_unclaimed_list name=%q id=%s fallback_category=wait",
+					name, l.ID)
+				break
+			}
+		}
+	}
+
+	return resolved, nil
+}

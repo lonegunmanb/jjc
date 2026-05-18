@@ -92,15 +92,19 @@ Gateway **不会主动结束你**，除了一种例外：**当你收到一条以
 
 ### 看板：Claw Kanban — list ID
 
-| List 名称 | List ID 环境变量名 |
-|-----------|---------|
-| Need Attention | `TRELLO_NEED_ATTENTION` |
-| Pending PR | `TRELLO_PENDING_PR` |
-| Analyze | `TRELLO_ANALYZE` |
-| Ready for plan review | `TRELLO_READY_FOR_PLAN_REVIEW` |
-| In action | `TRELLO_IN_ACTION` |
-| Ready for review | `TRELLO_READY_FOR_REVIEW` |
-| Done | `TRELLO_DONE` |
+Gateway 在每次启动时把 `router.hcl` 里 `kanban {}` 块声明的角色名解析成稳定的 Trello list ID，并通过 CARD CONTEXT 注入到你的 system prompt。需要操作某条特定列时，**直接读 CARD CONTEXT 里的 `kanban_*_id` 字段**（不要再期待 `TRELLO_*` 环境变量；那一层已经下线）。
+
+| 角色（kanban {} 块） | CARD CONTEXT 字段 | 默认列名 |
+|----------------------|------------------------------------|-----------------------|
+| `plan`               | `kanban_plan_id`                   | Analyze               |
+| `action`             | `kanban_action_id`                 | In action             |
+| `wait.plan_review`   | `kanban_wait_plan_review_id`       | Ready for plan review |
+| `wait.action_review` | `kanban_wait_action_review_id`     | Ready for review      |
+| `wait.generic`       | `kanban_wait_generic_id`           | Pending PR            |
+| `wait.exception`     | `kanban_wait_exception_id`         | Need Attention        |
+| `done`               | `kanban_done_id`                   | Done                  |
+
+`kanban_board_id` 给出当前 board 的 id；`kanban_agent_comment_prefixes` 是被 gateway 当作 agent 自评论的前缀列表（默认 `["[agent]:"]`），你发评论时必须沿用其中一个前缀，否则会触发循环。
 
 ### Trello 操作：gateway 注册的内进程工具（不走 exec）
 

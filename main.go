@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -15,10 +18,34 @@ import (
 
 	"github.com/lonegunmanb/trello-copilot/internal/app"
 	"github.com/lonegunmanb/trello-copilot/internal/app/aiassistedrefresh"
+	"github.com/lonegunmanb/trello-copilot/internal/app/kanban"
 	"github.com/lonegunmanb/trello-copilot/internal/app/prompts"
 	"github.com/lonegunmanb/trello-copilot/internal/app/prompttmpl"
 	"github.com/lonegunmanb/trello-copilot/internal/app/trelloclient"
 )
+
+// kanbanFetcherAdapter bridges trelloclient.Client (which returns
+// []trelloclient.List) to the kanban.BoardListsFetcher interface
+// (which expects []kanban.BoardList). The kanban package intentionally
+// does not depend on trelloclient so tests can stub the fetch without
+// dragging in the full HTTP-backed surface.
+type kanbanFetcherAdapter struct{ c trelloclient.Client }
+
+func newKanbanFetcher(c trelloclient.Client) kanban.BoardListsFetcher {
+	return &kanbanFetcherAdapter{c: c}
+}
+
+func (a *kanbanFetcherAdapter) ListBoardLists(ctx context.Context, boardID string) ([]kanban.BoardList, error) {
+	raw, err := a.c.ListBoardLists(ctx, boardID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]kanban.BoardList, len(raw))
+	for i, l := range raw {
+		out[i] = kanban.BoardList{ID: l.ID, Name: l.Name}
+	}
+	return out, nil
+}
 
 func main() {
 	cfg, err := app.LoadConfig(os.Args)
@@ -84,6 +111,43 @@ func main() {
 	runner.SetTrelloClient(trelloClient)
 	runner.SetCardInfoFetcher(app.NewSDKCardInfoFetcher(trelloClient))
 	runner.SetPlaybooks(renderer)
+
+	// Resolve the kanban {} block in router.hcl against the configured
+	// Trello board. This is required: cfg.KanbanBoardID is validated
+	// to be non-empty by LoadConfig, so an empty value here means the
+	// CLI flag / env-var precedence layer is broken — fail loudly.
+	if cfg.KanbanBoardID == "" {
+		logger.Fatalf("event=kanban_board_id_missing message=%q",
+			"missing --kanban-board-id / TRELLO_KANBAN_BOARD_ID; gateway cannot resolve kanban {} block in router.hcl")
+	}
+	kanbanCtx, kanbanCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	hclPath := filepath.Join(cfg.RouterDir, "router.hcl")
+	resolved, kerr := kanban.LoadAndResolve(kanbanCtx, hclPath, cfg.KanbanBoardID,
+		newKanbanFetcher(trelloClient), logger)
+	kanbanCancel()
+	if kerr != nil {
+		// Surface the distinct failure modes the issue calls out so
+		// operators can grep the structured event token.
+		var rerr *kanban.ResolveError
+		if errors.As(kerr, &rerr) {
+			logger.Fatalf("event=kanban_resolve_failed board_id=%s missing_roles=%v ambiguous_roles=%v err=%v",
+				rerr.BoardID, rerr.MissingRoles, rerr.AmbiguousRoles, rerr)
+		}
+		// Distinguish "could not fetch lists" from "could not read HCL"
+		// by inspecting the wrapped error message — both are fatal but
+		// the log token differs so dashboards can alert on them
+		// separately.
+		if strings.Contains(kerr.Error(), "fetch board lists") {
+			logger.Fatalf("event=trello_board_lists_fetch_failed board_id=%s err=%v",
+				cfg.KanbanBoardID, kerr)
+		}
+		logger.Fatalf("event=kanban_load_failed hcl_path=%s board_id=%s err=%v",
+			hclPath, cfg.KanbanBoardID, kerr)
+	}
+	logger.Printf("event=kanban_resolved board_id=%s plan_id=%s action_id=%s done_id=%s wait_list_count=%d unclaimed_count=%d",
+		resolved.BoardID, resolved.Plan.ID, resolved.Action.ID, resolved.Done.ID,
+		len(resolved.WaitListIDs), len(resolved.UnclaimedListNames))
+	runner.SetKanbanView(resolved)
 
 	// Register the AzureRM provider refresh hook: when the per-card
 	// work_dir turns out to be a clone of hashicorp/terraform-provider-azurerm
