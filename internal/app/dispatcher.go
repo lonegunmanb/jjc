@@ -120,7 +120,7 @@ type Dispatcher struct {
 	// <router-dir>/router.hcl + the resolved kanban view; tests that
 	// skip wiring observe a lazy default built from
 	// router.MustNewDefaultEngine() instead.
-	routeEngine *router.Engine
+	routeEngine     *router.Engine
 	routeEngineOnce sync.Once
 
 	mu      sync.Mutex
@@ -250,11 +250,10 @@ func (d *Dispatcher) evaluateRoute(rawBody []byte) RouteDecision {
 // SetRouteEngine. This keeps unit tests that never go through main.go
 // working without forcing them to wire an engine of their own.
 func (d *Dispatcher) engine() *router.Engine {
-	if d.routeEngine != nil {
-		return d.routeEngine
-	}
 	d.routeEngineOnce.Do(func() {
-		d.routeEngine = router.MustNewDefaultEngine()
+		if d.routeEngine == nil {
+			d.routeEngine = router.MustNewDefaultEngine()
+		}
 	})
 	return d.routeEngine
 }
