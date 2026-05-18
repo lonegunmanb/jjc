@@ -197,12 +197,10 @@ func (d *Dispatcher) recordGlobal(cardID, kind, summary string) {
 // engine against the raw Trello payload and translates the engine's
 // string `Do` token into the dispatcher's RouteAction enum.
 //
-// The engine surface is name-only today (matching against the
-// kanban.{plan,action,wait,done}_lists name sets). The dispatcher
-// still extracts the action.list_after / action.list_name strings
-// from the raw payload, plus the gateway's defence-in-depth
-// IsValidCardID check, and feeds them to the engine as the
-// router.Event fields.
+// The dispatcher extracts the action.list_after / action.list_after_id
+// and action.list_name / action.list_id values from the raw payload,
+// plus the gateway's defence-in-depth IsValidCardID check, and feeds
+// them to the engine as the router.Event fields.
 //
 // `ListAfter` is preserved on the returned RouteDecision so existing
 // logs and prompt templates (assembleDepartureNotice, ...) keep
@@ -214,8 +212,12 @@ func (d *Dispatcher) evaluateRoute(rawBody []byte) RouteDecision {
 	data := asMap(action["data"])
 	card := asMap(data["card"])
 	cardID := asString(card["id"])
-	listAfter := asString(asMap(data["listAfter"])["name"])
-	listName := asString(asMap(data["list"])["name"])
+	listAfterMap := asMap(data["listAfter"])
+	listAfter := asString(listAfterMap["name"])
+	listAfterID := asString(listAfterMap["id"])
+	listMap := asMap(data["list"])
+	listName := asString(listMap["name"])
+	listID := asString(listMap["id"])
 	text := asString(data["text"])
 
 	ev := router.Event{
@@ -223,7 +225,9 @@ func (d *Dispatcher) evaluateRoute(rawBody []byte) RouteDecision {
 		CardID:      cardID,
 		CardIDValid: cardID != "" && IsValidCardID(cardID),
 		ListAfter:   listAfter,
+		ListAfterID: listAfterID,
 		ListName:    listName,
+		ListID:      listID,
 		Comment:     text,
 	}
 

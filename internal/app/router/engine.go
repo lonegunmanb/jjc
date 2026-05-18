@@ -25,7 +25,9 @@ type Event struct {
 	CardID      string // action.card_id
 	CardIDValid bool   // action.card_id_valid (false when the id failed the safety check)
 	ListAfter   string // action.list_after
+	ListAfterID string // action.list_after_id
 	ListName    string // action.list_name
+	ListID      string // action.list_id
 	Comment     string // action.comment
 }
 
@@ -43,11 +45,11 @@ type Decision struct {
 // underlying *kanban.Resolved and the route slice are read-only at
 // dispatch time).
 type Engine struct {
-	routes  []Route
-	view    *kanban.Resolved
-	logger  *log.Logger
-	funcs   map[string]function.Function
-	kanban  cty.Value // pre-built kanban.* object reused on every Evaluate
+	routes []Route
+	view   *kanban.Resolved
+	logger *log.Logger
+	funcs  map[string]function.Function
+	kanban cty.Value // pre-built kanban.* object reused on every Evaluate
 }
 
 // NewEngine builds an Engine from the decoded Config and the resolved
@@ -121,7 +123,9 @@ func buildActionValue(ev Event) cty.Value {
 		"card_id":       cty.StringVal(ev.CardID),
 		"card_id_valid": cty.BoolVal(ev.CardIDValid),
 		"list_after":    cty.StringVal(ev.ListAfter),
+		"list_after_id": cty.StringVal(ev.ListAfterID),
 		"list_name":     cty.StringVal(ev.ListName),
+		"list_id":       cty.StringVal(ev.ListID),
 		"comment":       cty.StringVal(ev.Comment),
 	})
 }
@@ -135,6 +139,10 @@ func buildKanbanValue(view *kanban.Resolved) cty.Value {
 	actionNames := []string{}
 	waitNames := []string{}
 	doneNames := []string{}
+	planIDs := []string{}
+	actionIDs := []string{}
+	waitIDs := []string{}
+	doneIDs := []string{}
 	prefixes := []string{}
 
 	plan := cty.ObjectVal(map[string]cty.Value{"name": cty.StringVal("")})
@@ -158,6 +166,10 @@ func buildKanbanValue(view *kanban.Resolved) cty.Value {
 		for _, n := range view.UnclaimedListNames {
 			waitNames = append(waitNames, normaliseListName(n))
 		}
+		planIDs = append(planIDs, view.PlanListIDs...)
+		actionIDs = append(actionIDs, view.ActionListIDs...)
+		waitIDs = append(waitIDs, view.WaitListIDs...)
+		doneIDs = append(doneIDs, view.DoneListIDs...)
 		prefixes = append(prefixes, view.AgentCommentPrefixes...)
 		plan = cty.ObjectVal(map[string]cty.Value{"name": cty.StringVal(view.Plan.Name)})
 		action = cty.ObjectVal(map[string]cty.Value{"name": cty.StringVal(view.Action.Name)})
@@ -173,6 +185,10 @@ func buildKanbanValue(view *kanban.Resolved) cty.Value {
 		"action_lists":           stringList(actionNames),
 		"wait_lists":             stringList(waitNames),
 		"done_lists":             stringList(doneNames),
+		"plan_list_ids":          stringList(planIDs),
+		"action_list_ids":        stringList(actionIDs),
+		"wait_list_ids":          stringList(waitIDs),
+		"done_list_ids":          stringList(doneIDs),
 		"agent_comment_prefixes": stringList(prefixes),
 		"plan":                   plan,
 		"action":                 action,

@@ -25,6 +25,10 @@ func sampleView() *kanban.Resolved {
 		},
 		AgentCommentPrefixes: []string{"[agent]:", "[bot]:"},
 		UnclaimedListNames:   []string{"Inbox"},
+		PlanListIDs:          []string{"L_PLAN"},
+		ActionListIDs:        []string{"L_ACTION"},
+		WaitListIDs:          []string{"L_RPR", "L_RR", "L_PPR", "L_NA", "L_INBOX"},
+		DoneListIDs:          []string{"L_DONE"},
 	}
 }
 
@@ -74,8 +78,8 @@ func TestEngineEvaluate(t *testing.T) {
 			wantReason: "updateCard_no_list_move",
 		},
 		{
-			name:       "moved to plan list",
-			ev:         Event{Type: "updateCard", CardID: "c1", CardIDValid: true, ListAfter: "Analyze"},
+			name:       "moved to plan list by id",
+			ev:         Event{Type: "updateCard", CardID: "c1", CardIDValid: true, ListAfter: "Renamed Analyze", ListAfterID: "L_PLAN"},
 			wantRoute:  "moved_to_plan_list",
 			wantDo:     ActionDispatch,
 			wantReason: "moved_to_active_list",
@@ -88,8 +92,8 @@ func TestEngineEvaluate(t *testing.T) {
 			wantReason: "moved_to_active_list",
 		},
 		{
-			name:       "moved to done",
-			ev:         Event{Type: "updateCard", CardID: "c1", CardIDValid: true, ListAfter: "Done"},
+			name:       "moved to done by id",
+			ev:         Event{Type: "updateCard", CardID: "c1", CardIDValid: true, ListAfter: "Renamed Done", ListAfterID: "L_DONE"},
 			wantRoute:  "moved_to_done",
 			wantDo:     ActionTerminate,
 			wantReason: "moved_to_done",
@@ -109,9 +113,16 @@ func TestEngineEvaluate(t *testing.T) {
 			wantReason: "moved_to_non_active_list",
 		},
 		{
-			name:       "createCard in plan list",
-			ev:         Event{Type: "createCard", CardID: "c1", CardIDValid: true, ListName: "Analyze"},
+			name:       "createCard in plan list by id",
+			ev:         Event{Type: "createCard", CardID: "c1", CardIDValid: true, ListName: "Renamed Analyze", ListID: "L_PLAN"},
 			wantRoute:  "created_in_plan_list",
+			wantDo:     ActionDispatch,
+			wantReason: "created_in_active_list",
+		},
+		{
+			name:       "createCard in action list by name fallback",
+			ev:         Event{Type: "createCard", CardID: "c1", CardIDValid: true, ListName: "In Action"},
+			wantRoute:  "created_in_action_list",
 			wantDo:     ActionDispatch,
 			wantReason: "created_in_active_list",
 		},
@@ -174,6 +185,21 @@ func TestEngineEvaluate(t *testing.T) {
 					tc.ev, got, tc.wantRoute, tc.wantDo, tc.wantReason)
 			}
 		})
+	}
+}
+
+func TestEngineListAfterIDMatchesRenamedList(t *testing.T) {
+	engine, _ := newSampleEngine(t)
+
+	got := engine.Evaluate(Event{
+		Type:        "updateCard",
+		CardID:      "c1",
+		CardIDValid: true,
+		ListAfter:   "Operator renamed this after startup",
+		ListAfterID: "L_ACTION",
+	})
+	if got.Route != "moved_to_action_list" || got.Do != ActionDispatch || got.Reason != "moved_to_active_list" {
+		t.Errorf("Evaluate with renamed list but known id = %+v; want moved_to_action_list dispatch", got)
 	}
 }
 

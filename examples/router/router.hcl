@@ -96,6 +96,10 @@ kanban {
 #   kanban.action_lists                 list(string)  ["In action"]
 #   kanban.wait_lists                   list(string)  union of all wait sub-roles
 #   kanban.done_lists                   list(string)  ["Done"]
+#   kanban.plan_list_ids                list(string)  resolved Trello IDs
+#   kanban.action_list_ids              list(string)  resolved Trello IDs
+#   kanban.wait_list_ids                list(string)  resolved Trello IDs
+#   kanban.done_list_ids                list(string)  resolved Trello IDs
 #
 # Per-role accessors for prompts / fine-grained rules:
 #   kanban.plan.name                    string        "Analyze"
@@ -122,7 +126,9 @@ kanban {
 #                         path-traversal safety check (always true when
 #                         action.card_id == "")
 #   action.list_after     string; non-empty only for an updateCard list move
+#   action.list_after_id  string; data.listAfter.id for updateCard list moves
 #   action.list_name      string; createCard's destination list (data.list.name)
+#   action.list_id        string; createCard's destination list id (data.list.id)
 #   action.comment        string; commentCard's text (data.text)
 #
 # `do` field values:
@@ -154,28 +160,33 @@ route "invalid_card_id" {
 
 # ---- updateCard (a card was edited or moved) --------------------------------
 route "updateCard_no_list_move" {
-  when   = action.type == "updateCard" && action.list_after == ""
+  when   = (action.type == "updateCard"
+        && action.list_after_id == ""
+        && action.list_after == "")
   do     = "drop"
   reason = "updateCard_no_list_move"
 }
 
 route "moved_to_done" {
   when   = (action.type == "updateCard"
-        && contains(kanban.done_lists, lower(action.list_after)))
+        && (contains(kanban.done_list_ids, action.list_after_id)
+            || contains(kanban.done_lists, lower(action.list_after))))
   do     = "terminate"
   reason = "moved_to_done"
 }
 
 route "moved_to_plan_list" {
   when   = (action.type == "updateCard"
-        && contains(kanban.plan_lists, lower(action.list_after)))
+        && (contains(kanban.plan_list_ids, action.list_after_id)
+            || contains(kanban.plan_lists, lower(action.list_after))))
   do     = "dispatch"
   reason = "moved_to_active_list"
 }
 
 route "moved_to_action_list" {
   when   = (action.type == "updateCard"
-        && contains(kanban.action_lists, lower(action.list_after)))
+        && (contains(kanban.action_list_ids, action.list_after_id)
+            || contains(kanban.action_lists, lower(action.list_after))))
   do     = "dispatch"
   reason = "moved_to_active_list"
 }
@@ -188,7 +199,8 @@ route "moved_to_action_list" {
 # winds down its in-flight work; the dispatcher drops the event when
 # no worker is registered for the card.
 route "moved_to_wait_list" {
-  when   = action.type == "updateCard" && action.list_after != ""
+  when   = (action.type == "updateCard"
+        && (action.list_after_id != "" || action.list_after != ""))
   do     = "notify_departure"
   reason = "moved_to_non_active_list"
 }
@@ -198,14 +210,16 @@ route "moved_to_wait_list" {
 # Created in wait/done/unknown -> drop (humans can move it later).
 route "created_in_plan_list" {
   when   = (action.type == "createCard"
-        && contains(kanban.plan_lists, lower(action.list_name)))
+        && (contains(kanban.plan_list_ids, action.list_id)
+            || contains(kanban.plan_lists, lower(action.list_name))))
   do     = "dispatch"
   reason = "created_in_active_list"
 }
 
 route "created_in_action_list" {
   when   = (action.type == "createCard"
-        && contains(kanban.action_lists, lower(action.list_name)))
+        && (contains(kanban.action_list_ids, action.list_id)
+            || contains(kanban.action_lists, lower(action.list_name))))
   do     = "dispatch"
   reason = "created_in_active_list"
 }
