@@ -52,14 +52,22 @@ type List struct {
 	Name string `json:"name"`
 }
 
+type Webhook struct {
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	IDModel     string `json:"idModel"`
+	CallbackURL string `json:"callbackURL"`
+	Active      bool   `json:"active"`
+}
+
 // Comment is a single Trello commentCard action with the fields useful
 // for routing and audit logs.
 type Comment struct {
 	ID       string    `json:"id"`
 	Text     string    `json:"text"`
-	By       string    `json:"by"`     // member full name (best effort)
-	ByID     string    `json:"by_id"`  // member id (best effort)
-	At       time.Time `json:"at"`     // action timestamp
+	By       string    `json:"by"`    // member full name (best effort)
+	ByID     string    `json:"by_id"` // member id (best effort)
+	At       time.Time `json:"at"`    // action timestamp
 	Username string    `json:"username,omitempty"`
 }
 
@@ -94,6 +102,10 @@ type Client interface {
 	// after `since`, oldest-first. since.IsZero() returns up to one page
 	// of recent comments.
 	ListCommentsSince(ctx context.Context, cardID string, since time.Time) ([]Comment, error)
+
+	ListTokenWebhooks(ctx context.Context, token string) ([]Webhook, error)
+	UpdateWebhookCallback(ctx context.Context, webhookID, callbackURL string) error
+	CreateTokenWebhook(ctx context.Context, token, boardID, callbackURL, description string) (Webhook, error)
 }
 
 // ErrNoComments is the sentinel returned (wrapped) by GetLatestComment
@@ -104,11 +116,11 @@ var ErrNoComments = errors.New("trelloclient: card has no comments")
 type Option func(*config) error
 
 type config struct {
-	apiKey  string
+	apiKey   string
 	apiToken string
-	server  string
+	server   string
 	httpDoer trellosdk.HttpRequestDoer
-	logger  *log.Logger
+	logger   *log.Logger
 }
 
 // WithCredentials supplies the API key/token Trello requires. Required.
@@ -355,6 +367,96 @@ func (c *sdkBackedClient) ListCommentsSince(ctx context.Context, cardID string, 
 		}
 	}
 	return out, nil
+}
+
+func (c *sdkBackedClient) ListTokenWebhooks(ctx context.Context, token string) ([]Webhook, error) {
+	if token == "" {
+		return nil, errors.New("trelloclient: token is empty")
+	}
+	resp, err := c.sdk.GetTokensTokenWebhooks(ctx, token)
+	if err != nil {
+		return nil, fmt.Errorf("trelloclient: GET /tokens/%s/webhooks: %w", token, err)
+	}
+	body, err := readAndCheck(resp, http.StatusOK, "GET /tokens/"+token+"/webhooks")
+	if err != nil {
+		return nil, err
+	}
+	var hooks []Webhook
+	if err := json.Unmarshal(body, &hooks); err != nil {
+		return nil, fmt.Errorf("trelloclient: decode webhooks for token: %w", err)
+	}
+	return hooks, nil
+}
+
+func (c *sdkBackedClient) UpdateWebhookCallback(ctx context.Context, webhookID, callbackURL string) error {
+	if webhookID == "" {
+		return errors.New("trelloclient: webhook id is empty")
+	}
+	if callbackURL == "" {
+		return errors.New("trelloclient: callback URL is empty")
+	}
+	resp, err := c.sdk.PutWebhooksId(ctx, webhookID, &trellosdk.PutWebhooksIdParams{CallbackURL: &callbackURL})
+	if err != nil {
+		return fmt.Errorf("trelloclient: PUT /webhooks/%s: %w", webhookID, err)
+	}
+	if _, err := readAndCheck(resp, http.StatusOK, "PUT /webhooks/"+webhookID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *sdkBackedClient) CreateTokenWebhook(ctx context.Context, token, boardID, callbackURL, description string) (Webhook, error) {
+	if token == "" {
+		return Webhook{}, errors.New("trelloclient: token is empty")
+	}
+	if boardID == "" {
+		return Webhook{}, errors.New("trelloclient: board id is empty")
+	}
+	if callbackURL == "" {
+		return Webhook{}, errors.New("trelloclient: callback URL is empty")
+	}
+	idModel := trellosdk.TrelloID(boardID)
+	resp, err := c.sdk.PostTokensTokenWebhooks(ctx, token, &trellosdk.PostTokensTokenWebhooksParams{
+		Description: &description,
+		CallbackURL: callbackURL,
+		IdModel:     idModel,
+	})
+	if err != nil {
+		return Webhook{}, fmt.Errorf("trelloclient: POST /tokens/%s/webhooks: %w", token, err)
+	}
+	body, err := readAndCheck(resp, http.StatusOK, "POST /tokens/"+token+"/webhooks")
+	if err != nil {
+		return Webhook{}, err
+	}
+	var hook Webhook
+	if err := json.Unmarshal(body, &hook); err != nil {
+		return Webhook{}, fmt.Errorf("trelloclient: decode created webhook: %w", err)
+	}
+	return hook, nil
+}
+
+func ReconcileBoardWebhook(ctx context.Context, c Client, token, boardID, callbackURL string) (string, error) {
+	if c == nil {
+		return "", errors.New("trelloclient: client is nil")
+	}
+	hooks, err := c.ListTokenWebhooks(ctx, token)
+	if err != nil {
+		return "", err
+	}
+	for _, hook := range hooks {
+		if hook.IDModel != boardID {
+			continue
+		}
+		if err := c.UpdateWebhookCallback(ctx, hook.ID, callbackURL); err != nil {
+			return "", err
+		}
+		return hook.ID, nil
+	}
+	hook, err := c.CreateTokenWebhook(ctx, token, boardID, callbackURL, "trello-copilot-gateway")
+	if err != nil {
+		return "", err
+	}
+	return hook.ID, nil
 }
 
 // commentsPerPage is the maximum page size Trello accepts for the

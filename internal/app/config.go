@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+
+	"github.com/lonegunmanb/trello-copilot/internal/app/tunnel"
 )
 
 type Config struct {
@@ -18,6 +20,7 @@ type Config struct {
 	TrelloAPIKey   string
 	TrelloAPIToken string
 	CallbackURL    string
+	Tunnel         string
 	CopilotModel   string
 	// RouterDir is the directory containing legacy trello helper scripts
 	// under scripts/ (e.g. trello-log-event.ps1). Entry playbooks no
@@ -62,6 +65,7 @@ func LoadConfig(args []string) (Config, error) {
 		TrelloAPIKey:   os.Getenv("TRELLO_API_KEY"),
 		TrelloAPIToken: os.Getenv("TRELLO_API_TOKEN"),
 		CallbackURL:    os.Getenv("CALLBACK_URL"),
+		Tunnel:         envOrDefault("TRELLO_GATEWAY_TUNNEL", tunnel.Cloudflared),
 		CopilotModel:   envOrDefault("COPILOT_MODEL", DefaultCopilotModel),
 		RouterDir:      envOrDefault("WORKSPACE_TRELLO_ROUTER_DIR", DefaultRouterDir),
 		PlaybooksDir:   envOrDefault("TRELLO_PLAYBOOKS_DIR", defaultPlaybooksDir()),
@@ -74,6 +78,7 @@ func LoadConfig(args []string) (Config, error) {
 	fs.StringVar(&cfg.TrelloAPIKey, "trello-api-key", cfg.TrelloAPIKey, "Trello API key (used by the Go SDK to talk to api.trello.com)")
 	fs.StringVar(&cfg.TrelloAPIToken, "trello-api-token", cfg.TrelloAPIToken, "Trello API token (used by the Go SDK to talk to api.trello.com)")
 	fs.StringVar(&cfg.CallbackURL, "callback-url", cfg.CallbackURL, "webhook callback URL used for signature verification")
+	fs.StringVar(&cfg.Tunnel, "tunnel", cfg.Tunnel, "tunnel provider: cloudflared or none")
 	fs.StringVar(&cfg.CopilotModel, "copilot-model", cfg.CopilotModel, "Copilot model to use for the agent session")
 	fs.StringVar(&cfg.RouterDir, "router-dir", cfg.RouterDir, "directory containing trello helper scripts under scripts/")
 	fs.StringVar(&cfg.PlaybooksDir, "playbooks-dir", cfg.PlaybooksDir, "directory containing playbook .md files (default <cwd>/.playbooks)")
@@ -81,6 +86,9 @@ func LoadConfig(args []string) (Config, error) {
 
 	if err := fs.Parse(args[1:]); err != nil {
 		return Config{}, err
+	}
+	if cfg.Tunnel == "" {
+		cfg.Tunnel = tunnel.Cloudflared
 	}
 
 	if err := validateConfig(cfg); err != nil {
@@ -100,8 +108,17 @@ func validateConfig(cfg Config) error {
 	if cfg.TrelloAPIToken == "" {
 		return errors.New("missing trello api token, set --trello-api-token or TRELLO_API_TOKEN")
 	}
-	if cfg.CallbackURL == "" {
-		return errors.New("missing callback URL, set --callback-url or CALLBACK_URL")
+	switch cfg.Tunnel {
+	case tunnel.Cloudflared:
+		if cfg.CallbackURL != "" {
+			return errors.New("--callback-url/CALLBACK_URL is mutually exclusive with --tunnel=cloudflared; use --tunnel=none to manage the callback URL manually")
+		}
+	case tunnel.None:
+		if cfg.CallbackURL == "" {
+			return errors.New("missing callback URL, set --callback-url or CALLBACK_URL when --tunnel=none")
+		}
+	default:
+		return fmt.Errorf("unknown tunnel provider %q (valid: %s, %s)", cfg.Tunnel, tunnel.Cloudflared, tunnel.None)
 	}
 	if cfg.CopilotModel == "" {
 		return errors.New("missing copilot model, set --copilot-model or COPILOT_MODEL")
@@ -139,8 +156,8 @@ func envOrDefault(key, fallback string) string {
 }
 
 func (c Config) Redacted() string {
-	return fmt.Sprintf("listen=%s callback_url=%s copilot_model=%s router_dir=%s playbooks_dir=%s kanban_board_id=%s trello_api_secret=%s trello_api_key=%s trello_api_token=%s",
-		c.ListenAddr, c.CallbackURL, c.CopilotModel, c.RouterDir, c.PlaybooksDir, c.KanbanBoardID,
+	return fmt.Sprintf("listen=%s callback_url=%s tunnel=%s copilot_model=%s router_dir=%s playbooks_dir=%s kanban_board_id=%s trello_api_secret=%s trello_api_key=%s trello_api_token=%s",
+		c.ListenAddr, c.CallbackURL, c.Tunnel, c.CopilotModel, c.RouterDir, c.PlaybooksDir, c.KanbanBoardID,
 		redact(c.TrelloSecret), redact(c.TrelloAPIKey), redact(c.TrelloAPIToken))
 }
 
