@@ -148,29 +148,29 @@ route "updateCard_no_list_move" {
 }
 
 route "moved_to_done" {
-  when   = action.type == "updateCard"
-        && contains(kanban.done_lists, lower(action.list_after))
+  when   = (action.type == "updateCard"
+        && contains(kanban.done_lists, lower(action.list_after)))
   do     = "terminate"
   reason = "moved_to_done"
 }
 
 route "moved_to_plan_list" {
-  when   = action.type == "updateCard"
-        && contains(kanban.plan_lists, lower(action.list_after))
+  when   = (action.type == "updateCard"
+        && contains(kanban.plan_lists, lower(action.list_after)))
   do     = "dispatch"
   reason = "moved_to_plan_list"
 }
 
 route "moved_to_action_list" {
-  when   = action.type == "updateCard"
-        && contains(kanban.action_lists, lower(action.list_after))
+  when   = (action.type == "updateCard"
+        && contains(kanban.action_lists, lower(action.list_after)))
   do     = "dispatch"
   reason = "moved_to_action_list"
 }
 
 route "moved_to_wait_list" {
-  when   = action.type == "updateCard"
-        && contains(kanban.wait_lists, lower(action.list_after))
+  when   = (action.type == "updateCard"
+        && contains(kanban.wait_lists, lower(action.list_after)))
   do     = "notify_departure"
   reason = "moved_to_wait_list"
 }
@@ -189,15 +189,15 @@ route "moved_to_unknown_list" {
 # Created in plan or action role -> dispatch immediately.
 # Created in wait/done/unknown -> drop (humans can move it later).
 route "created_in_plan_list" {
-  when   = action.type == "createCard"
-        && contains(kanban.plan_lists, lower(action.list_name))
+  when   = (action.type == "createCard"
+        && contains(kanban.plan_lists, lower(action.list_name)))
   do     = "dispatch"
   reason = "created_in_plan_list"
 }
 
 route "created_in_action_list" {
-  when   = action.type == "createCard"
-        && contains(kanban.action_lists, lower(action.list_name))
+  when   = (action.type == "createCard"
+        && contains(kanban.action_lists, lower(action.list_name)))
   do     = "dispatch"
   reason = "created_in_action_list"
 }
@@ -214,9 +214,9 @@ route "created_in_non_active_list" {
 # does NOT move the card — that "stay put on comments" behaviour is enforced
 # by WORKER.md, not by the router.
 route "agent_self_comment" {
-  when   = action.type == "commentCard"
+  when   = (action.type == "commentCard"
         && anytrue([for p in kanban.agent_comment_prefixes :
-                      startswith(trimspace(action.comment), p)])
+                      startswith(trimspace(action.comment), p)]))
   do     = "drop"
   reason = "agent_self_comment"
 }
@@ -290,43 +290,43 @@ route "unsupported_action_type" {
 
 # --- terraform-provider-azurerm
 rule "azurerm_provider_issue" {
-  when = github_issue(card.first_line) != null
+  when = (github_issue(card.first_line) != null
       && lower(github_issue(card.first_line).repo) == "terraform-provider-azurerm"
-      && github_issue(card.first_line).kind == "issue"
+      && github_issue(card.first_line).kind == "issue")
   prompts = ["azurerm_provider_issue.md"]
 }
 
 rule "azurerm_provider_pr" {
-  when = github_issue(card.first_line) != null
+  when = (github_issue(card.first_line) != null
       && lower(github_issue(card.first_line).repo) == "terraform-provider-azurerm"
-      && github_issue(card.first_line).kind == "pr"
+      && github_issue(card.first_line).kind == "pr")
   prompts = ["azurerm_provider_pr.md"]
 }
 
 # --- AVM module
 rule "avm_issue" {
-  when = github_issue(card.first_line) != null
+  when = (github_issue(card.first_line) != null
       && lower(github_issue(card.first_line).owner) == "azure"
       && strcontains(lower(github_issue(card.first_line).repo), "terraform")
       && strcontains(lower(github_issue(card.first_line).repo), "avm")
-      && github_issue(card.first_line).kind == "issue"
+      && github_issue(card.first_line).kind == "issue")
   prompts = ["avm_issue.md"]
 }
 
 rule "avm_pr" {
-  when = github_issue(card.first_line) != null
+  when = (github_issue(card.first_line) != null
       && lower(github_issue(card.first_line).owner) == "azure"
       && strcontains(lower(github_issue(card.first_line).repo), "terraform")
       && strcontains(lower(github_issue(card.first_line).repo), "avm")
-      && github_issue(card.first_line).kind == "pr"
+      && github_issue(card.first_line).kind == "pr")
   prompts = ["avm_pr.md"]
 }
 
 # --- other Azure/terraform-provider-*  (no per-kind playbook)
 rule "azure_other_provider" {
-  when = github_issue(card.first_line) != null
+  when = (github_issue(card.first_line) != null
       && lower(github_issue(card.first_line).owner) == "azure"
-      && startswith(lower(github_issue(card.first_line).repo), "terraform-provider-")
+      && startswith(lower(github_issue(card.first_line).repo), "terraform-provider-"))
   prompts = []
 }
 
@@ -334,18 +334,18 @@ rule "azure_other_provider" {
 # Order matters: the AVM and provider-* rules above already absorbed those
 # repos, so this rule does NOT need to re-exclude them.
 rule "tfvm_issue" {
-  when = github_issue(card.first_line) != null
+  when = (github_issue(card.first_line) != null
       && lower(github_issue(card.first_line).owner) == "azure"
       && strcontains(lower(github_issue(card.first_line).repo), "terraform")
-      && github_issue(card.first_line).kind == "issue"
+      && github_issue(card.first_line).kind == "issue")
   prompts = ["tfvm_issue.md"]
 }
 
 rule "tfvm_pr" {
-  when = github_issue(card.first_line) != null
+  when = (github_issue(card.first_line) != null
       && lower(github_issue(card.first_line).owner) == "azure"
       && strcontains(lower(github_issue(card.first_line).repo), "terraform")
-      && github_issue(card.first_line).kind == "pr"
+      && github_issue(card.first_line).kind == "pr")
   prompts = ["tfvm_pr.md"]
 }
 
