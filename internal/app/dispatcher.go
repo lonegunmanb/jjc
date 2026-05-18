@@ -100,11 +100,13 @@ type Dispatcher struct {
 
 	globalLog *GlobalEventLog
 
-	// kanbanView is the resolved list-name → list-id mapping produced
-	// at startup. Routing uses it to decide which category a Trello
-	// list move falls into. Nil is tolerated (Route falls back to the
-	// hard-coded legacy names) so unit tests that don't talk to Trello
-	// keep working.
+	// kanbanView is the resolved view produced at startup by
+	// internal/app/kanban.LoadAndResolve. It carries the per-role
+	// list IDs, per-category list-id sets, the agent-comment prefix
+	// list, and any unclaimed-list metadata. Route uses it to
+	// classify Trello webhook events. Nil is tolerated (Route falls
+	// back to the hard-coded legacy names) so unit tests that don't
+	// talk to Trello keep working.
 	kanbanView *kanban.Resolved
 
 	mu      sync.Mutex

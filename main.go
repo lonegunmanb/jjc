@@ -113,13 +113,8 @@ func main() {
 	runner.SetPlaybooks(renderer)
 
 	// Resolve the kanban {} block in router.hcl against the configured
-	// Trello board. This is required: cfg.KanbanBoardID is validated
-	// to be non-empty by LoadConfig, so an empty value here means the
-	// CLI flag / env-var precedence layer is broken — fail loudly.
-	if cfg.KanbanBoardID == "" {
-		logger.Fatalf("event=kanban_board_id_missing message=%q",
-			"missing --kanban-board-id / TRELLO_KANBAN_BOARD_ID; gateway cannot resolve kanban {} block in router.hcl")
-	}
+	// Trello board. cfg.KanbanBoardID was already validated to be
+	// non-empty by LoadConfig; the bootstrap is unconditional here.
 	kanbanCtx, kanbanCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	hclPath := filepath.Join(cfg.RouterDir, "router.hcl")
 	resolved, kerr := kanban.LoadAndResolve(kanbanCtx, hclPath, cfg.KanbanBoardID,
