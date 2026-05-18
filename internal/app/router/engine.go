@@ -144,17 +144,17 @@ func buildKanbanValue(view *kanban.Resolved) cty.Value {
 	waitExc := cty.ObjectVal(map[string]cty.Value{"name": cty.StringVal("")})
 
 	if view != nil {
-		planNames = append(planNames, strings.ToLower(strings.TrimSpace(view.Plan.Name)))
-		actionNames = append(actionNames, strings.ToLower(strings.TrimSpace(view.Action.Name)))
-		doneNames = append(doneNames, strings.ToLower(strings.TrimSpace(view.Done.Name)))
+		planNames = append(planNames, normaliseListName(view.Plan.Name))
+		actionNames = append(actionNames, normaliseListName(view.Action.Name))
+		doneNames = append(doneNames, normaliseListName(view.Done.Name))
 		waitNames = append(waitNames,
-			strings.ToLower(strings.TrimSpace(view.Wait.PlanReview.Name)),
-			strings.ToLower(strings.TrimSpace(view.Wait.ActionReview.Name)),
-			strings.ToLower(strings.TrimSpace(view.Wait.Generic.Name)),
-			strings.ToLower(strings.TrimSpace(view.Wait.Exception.Name)),
+			normaliseListName(view.Wait.PlanReview.Name),
+			normaliseListName(view.Wait.ActionReview.Name),
+			normaliseListName(view.Wait.Generic.Name),
+			normaliseListName(view.Wait.Exception.Name),
 		)
 		for _, n := range view.UnclaimedListNames {
-			waitNames = append(waitNames, strings.ToLower(strings.TrimSpace(n)))
+			waitNames = append(waitNames, normaliseListName(n))
 		}
 		for _, p := range view.AgentCommentPrefixes {
 			prefixes = append(prefixes, p)
@@ -184,6 +184,14 @@ func buildKanbanValue(view *kanban.Resolved) cty.Value {
 			"exception":     waitExc,
 		}),
 	})
+}
+
+// normaliseListName mirrors kanban.normaliseName so the
+// `contains(kanban.action_lists, lower(...))` idiom in router.hcl
+// hits on the same trim+lower spelling the kanban resolver used at
+// startup.
+func normaliseListName(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
 }
 
 func stringList(xs []string) cty.Value {

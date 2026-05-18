@@ -11,11 +11,10 @@ import (
 	"github.com/lonegunmanb/trello-copilot/internal/app/kanban"
 )
 
-// sampleRoutesHCL is the route-block portion of
-// examples/router/router.hcl trimmed down to the bare minimum the
-// engine needs. Kept in-line (rather than read from disk) so tests
-// fail loudly when the schema changes without the example being
-// updated in lock-step.
+// sampleRoutesHCL is a verbatim copy of the route-block portion of
+// examples/router/router.hcl. Kept in-line (rather than read from
+// disk) so tests fail loudly when the schema changes without the
+// example being updated in lock-step.
 const sampleRoutesHCL = `
 route "no_card_id" {
   when   = action.card_id == ""
