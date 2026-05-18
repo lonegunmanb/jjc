@@ -21,11 +21,12 @@ import (
 // it exposes through `lower(...)` only when the expression asks for it
 // (mirroring the example HCL).
 type Event struct {
-	Type      string // action.type
-	CardID    string // action.card_id
-	ListAfter string // action.list_after
-	ListName  string // action.list_name
-	Comment   string // action.comment
+	Type        string // action.type
+	CardID      string // action.card_id
+	CardIDValid bool   // action.card_id_valid (false when the id failed the safety check)
+	ListAfter   string // action.list_after
+	ListName    string // action.list_name
+	Comment     string // action.comment
 }
 
 // Decision is the structured outcome of Engine.Evaluate. Route is the
@@ -116,11 +117,12 @@ func (e *Engine) Evaluate(ev Event) Decision {
 // happens to be missing.
 func buildActionValue(ev Event) cty.Value {
 	return cty.ObjectVal(map[string]cty.Value{
-		"type":        cty.StringVal(ev.Type),
-		"card_id":     cty.StringVal(ev.CardID),
-		"list_after":  cty.StringVal(ev.ListAfter),
-		"list_name":   cty.StringVal(ev.ListName),
-		"comment":     cty.StringVal(ev.Comment),
+		"type":          cty.StringVal(ev.Type),
+		"card_id":       cty.StringVal(ev.CardID),
+		"card_id_valid": cty.BoolVal(ev.CardIDValid),
+		"list_after":    cty.StringVal(ev.ListAfter),
+		"list_name":     cty.StringVal(ev.ListName),
+		"comment":       cty.StringVal(ev.Comment),
 	})
 }
 

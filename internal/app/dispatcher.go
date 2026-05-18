@@ -14,6 +14,7 @@ import (
 	copilot "github.com/github/copilot-sdk/go"
 
 	"github.com/lonegunmanb/trello-copilot/internal/app/kanban"
+	"github.com/lonegunmanb/trello-copilot/internal/app/router"
 )
 
 // WorkerSession is the subset of *copilot.Session that the dispatcher
@@ -103,11 +104,24 @@ type Dispatcher struct {
 	// kanbanView is the resolved view produced at startup by
 	// internal/app/kanban.LoadAndResolve. It carries the per-role
 	// list IDs, per-category list-id sets, the agent-comment prefix
-	// list, and any unclaimed-list metadata. Route uses it to
-	// classify Trello webhook events. Nil is tolerated (Route falls
-	// back to the hard-coded legacy names) so unit tests that don't
-	// talk to Trello keep working.
+	// list, and any unclaimed-list metadata. The runner reads it via
+	// KanbanView() to build the per-card CARD CONTEXT block. The
+	// dispatcher itself no longer consults the view directly — every
+	// routing decision now flows through the HCL route engine
+	// (routeEngine, below). Nil is tolerated so unit tests that don't
+	// talk to Trello keep working: the default engine the dispatcher
+	// lazy-builds carries router.DefaultLegacyKanbanView, which uses
+	// the hard-coded "Analyze" / "In action" / "Done" / "[agent]:"
+	// names the legacy switch encoded.
 	kanbanView *kanban.Resolved
+
+	// routeEngine is the HCL `route {}` evaluator. SetRouteEngine
+	// installs the operator-loaded engine built from
+	// <router-dir>/router.hcl + the resolved kanban view; tests that
+	// skip wiring observe a lazy default built from
+	// router.MustNewDefaultEngine() instead.
+	routeEngine *router.Engine
+	routeEngineOnce sync.Once
 
 	mu      sync.Mutex
 	workers map[string]*workerHandle
@@ -148,13 +162,21 @@ func (d *Dispatcher) SetGlobalLog(g *GlobalEventLog) {
 	d.globalLog = g
 }
 
-// SetKanbanView installs the resolved kanban view that Route consults
-// to translate Trello list moves into routing categories. Call once at
-// startup, before the first Dispatch. Passing nil leaves the
-// dispatcher in legacy mode (Route uses hard-coded list names) — only
+// SetKanbanView installs the resolved kanban view that the runner
+// consults when building each per-card CARD CONTEXT block. Call once
+// at startup, before the first Dispatch. Passing nil leaves the runner
+// in legacy mode (no per-role IDs injected into CARD CONTEXT) — only
 // useful for tests that don't stand up the Trello-side resolution.
 func (d *Dispatcher) SetKanbanView(view *kanban.Resolved) {
 	d.kanbanView = view
+}
+
+// SetRouteEngine installs the HCL-driven route engine. Call once at
+// startup, before the first Dispatch. When unset, Dispatch lazily
+// builds router.MustNewDefaultEngine() so tests that never wire an
+// engine keep observing the legacy hard-coded routing semantics.
+func (d *Dispatcher) SetRouteEngine(e *router.Engine) {
+	d.routeEngine = e
 }
 
 // KanbanView returns the resolved view installed via SetKanbanView,
@@ -171,6 +193,88 @@ func (d *Dispatcher) recordGlobal(cardID, kind, summary string) {
 	}
 }
 
+// evaluateRoute runs the configured (or lazy-built default) route
+// engine against the raw Trello payload and translates the engine's
+// string `Do` token into the dispatcher's RouteAction enum.
+//
+// The engine surface is name-only today (matching against the
+// kanban.{plan,action,wait,done}_lists name sets). The dispatcher
+// still extracts the action.list_after / action.list_name strings
+// from the raw payload, plus the gateway's defence-in-depth
+// IsValidCardID check, and feeds them to the engine as the
+// router.Event fields.
+//
+// `ListAfter` is preserved on the returned RouteDecision so existing
+// logs and prompt templates (assembleDepartureNotice, ...) keep
+// surfacing the human-readable list name.
+func (d *Dispatcher) evaluateRoute(rawBody []byte) RouteDecision {
+	root := parseRawBody(rawBody)
+	action := asMap(root["action"])
+	actionType := asString(action["type"])
+	data := asMap(action["data"])
+	card := asMap(data["card"])
+	cardID := asString(card["id"])
+	listAfter := asString(asMap(data["listAfter"])["name"])
+	listName := asString(asMap(data["list"])["name"])
+	text := asString(data["text"])
+
+	ev := router.Event{
+		Type:        actionType,
+		CardID:      cardID,
+		CardIDValid: cardID != "" && IsValidCardID(cardID),
+		ListAfter:   listAfter,
+		ListName:    listName,
+		Comment:     text,
+	}
+
+	dec := d.engine().Evaluate(ev)
+
+	out := RouteDecision{
+		Action:    routeActionFromDo(dec.Do),
+		CardID:    cardID,
+		ListAfter: listAfter,
+		Reason:    dec.Reason,
+	}
+	// The legacy switch suppressed the CardID on no-card-id and
+	// invalid-card-id drops so the log line stays clean. The engine
+	// returns the raw card id; mirror the legacy elision here.
+	if dec.Reason == "no_card_id" || dec.Reason == "invalid_card_id" {
+		out.CardID = ""
+	}
+	return out
+}
+
+// engine returns the route engine the dispatcher will evaluate
+// against, lazy-building router.MustNewDefaultEngine() on first use
+// when no operator-provided engine has been installed via
+// SetRouteEngine. This keeps unit tests that never go through main.go
+// working without forcing them to wire an engine of their own.
+func (d *Dispatcher) engine() *router.Engine {
+	if d.routeEngine != nil {
+		return d.routeEngine
+	}
+	d.routeEngineOnce.Do(func() {
+		d.routeEngine = router.MustNewDefaultEngine()
+	})
+	return d.routeEngine
+}
+
+// routeActionFromDo maps a router.Engine `Do` token to the
+// dispatcher's RouteAction enum. Unknown tokens collapse to RouteDrop
+// so a misconfigured engine never crashes the dispatch path.
+func routeActionFromDo(do string) RouteAction {
+	switch do {
+	case router.ActionDispatch:
+		return RouteDispatch
+	case router.ActionTerminate:
+		return RouteTerminate
+	case router.ActionNotifyDeparture:
+		return RouteNotifyDeparture
+	default:
+		return RouteDrop
+	}
+}
+
 // Dispatch decides what to do with a Trello event and either pushes it to
 // the right per-card worker, terminates a worker, or drops the event.
 //
@@ -179,7 +283,7 @@ func (d *Dispatcher) recordGlobal(cardID, kind, summary string) {
 // made not to enqueue) — it does NOT wait for the worker to finish
 // processing it. This is what lets us reply 202 to Trello immediately.
 func (d *Dispatcher) Dispatch(ctx context.Context, eventID string, rawBody []byte) error {
-	decision := Route(rawBody, d.kanbanView)
+	decision := d.evaluateRoute(rawBody)
 	d.logger.Printf("event=route_decided event_id=%s action=%s card_id=%s list_after=%q reason=%s",
 		eventID, decision.Action, decision.CardID, decision.ListAfter, decision.Reason)
 	d.recordGlobal(decision.CardID, decision.Action.String(), decision.ListAfter+" "+decision.Reason)

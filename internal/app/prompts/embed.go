@@ -1,16 +1,19 @@
+// Package prompts holds the five skeleton playbook fragments that ship
+// embedded inside the gateway binary. They serve as defaults the
+// prompttmpl renderer materialises into its per-process temp directory
+// at startup so the gateway runs even when --playbooks-dir is empty;
+// any same-name .md under the operator's --playbooks-dir overrides
+// them.
+//
+// The package surface is intentionally tiny: Defaults() returns the
+// basename → content map the renderer consumes, and that is it. The
+// per-fragment package-level vars are exported so a test or a debug
+// command can poke at one file in isolation.
 package prompts
 
 import (
 	_ "embed"
-	"os"
-	"path/filepath"
 )
-
-//go:embed MANAGER.md
-var embeddedManager string
-
-//go:embed WORKER.md
-var embeddedWorker string
 
 //go:embed BOOTSTRAP.md
 var Bootstrap string
@@ -18,17 +21,14 @@ var Bootstrap string
 //go:embed IDENTITY.md
 var Identity string
 
+//go:embed WORKER.md
+var Worker string
+
 //go:embed TOOLS.md
 var Tools string
 
 //go:embed USER.md
 var User string
-
-// EmbeddedManager returns the MANAGER.md content baked into the binary.
-func EmbeddedManager() string { return embeddedManager }
-
-// EmbeddedWorker returns the WORKER.md content baked into the binary.
-func EmbeddedWorker() string { return embeddedWorker }
 
 // Defaults returns the embedded skeleton playbook contents keyed by
 // their canonical bare basenames. The prompttmpl renderer materialises
@@ -40,32 +40,13 @@ func Defaults() map[string]string {
 	return map[string]string{
 		"BOOTSTRAP.md": Bootstrap,
 		"IDENTITY.md":  Identity,
-		"WORKER.md":    embeddedWorker,
+		"WORKER.md":    Worker,
 		"TOOLS.md":     Tools,
 		"USER.md":      User,
 	}
 }
 
-// ResolveManager returns the MANAGER.md content. If a file named MANAGER.md
-// exists next to the running executable, its content is used; otherwise the
-// embedded copy is returned. The override path that was used (if any) is
-// returned as the second value, empty string when the embedded copy is used.
-func ResolveManager() (string, string) {
-	return resolveOverride("MANAGER.md", embeddedManager)
-}
-
-// ResolveWorker is the WORKER.md analogue of ResolveManager.
-func ResolveWorker() (string, string) {
-	return resolveOverride("WORKER.md", embeddedWorker)
-}
-
-func resolveOverride(name, embedded string) (string, string) {
-	exe, err := os.Executable()
-	if err == nil {
-		path := filepath.Join(filepath.Dir(exe), name)
-		if data, err := os.ReadFile(path); err == nil {
-			return string(data), path
-		}
-	}
-	return embedded, ""
-}
+// EmbeddedWorker returns the WORKER.md content baked into the binary.
+// Kept as a separately exported accessor so the runner's skeleton-prompt
+// fallback path can read it without copying the whole map.
+func EmbeddedWorker() string { return Worker }

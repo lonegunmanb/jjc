@@ -11,102 +11,6 @@ import (
 	"github.com/lonegunmanb/trello-copilot/internal/app/kanban"
 )
 
-// sampleRoutesHCL is a verbatim copy of the route-block portion of
-// examples/router/router.hcl. Kept in-line (rather than read from
-// disk) so tests fail loudly when the schema changes without the
-// example being updated in lock-step.
-const sampleRoutesHCL = `
-route "no_card_id" {
-  when   = action.card_id == ""
-  do     = "drop"
-  reason = "no_card_id"
-}
-
-route "updateCard_no_list_move" {
-  when   = action.type == "updateCard" && action.list_after == ""
-  do     = "drop"
-  reason = "updateCard_no_list_move"
-}
-
-route "moved_to_done" {
-  when   = action.type == "updateCard" && contains(kanban.done_lists, lower(action.list_after))
-  do     = "terminate"
-  reason = "moved_to_done"
-}
-
-route "moved_to_plan_list" {
-  when   = action.type == "updateCard" && contains(kanban.plan_lists, lower(action.list_after))
-  do     = "dispatch"
-  reason = "moved_to_plan_list"
-}
-
-route "moved_to_action_list" {
-  when   = action.type == "updateCard" && contains(kanban.action_lists, lower(action.list_after))
-  do     = "dispatch"
-  reason = "moved_to_action_list"
-}
-
-route "moved_to_wait_list" {
-  when   = action.type == "updateCard" && contains(kanban.wait_lists, lower(action.list_after))
-  do     = "notify_departure"
-  reason = "moved_to_wait_list"
-}
-
-route "moved_to_unknown_list" {
-  when   = action.type == "updateCard" && action.list_after != ""
-  do     = "drop"
-  reason = "moved_to_unknown_list"
-}
-
-route "created_in_plan_list" {
-  when   = action.type == "createCard" && contains(kanban.plan_lists, lower(action.list_name))
-  do     = "dispatch"
-  reason = "created_in_plan_list"
-}
-
-route "created_in_action_list" {
-  when   = action.type == "createCard" && contains(kanban.action_lists, lower(action.list_name))
-  do     = "dispatch"
-  reason = "created_in_action_list"
-}
-
-route "created_in_non_active_list" {
-  when   = action.type == "createCard"
-  do     = "drop"
-  reason = "created_in_non_active_list"
-}
-
-route "agent_self_comment" {
-  when   = action.type == "commentCard" && anytrue([for p in kanban.agent_comment_prefixes : startswith(trimspace(action.comment), p)])
-  do     = "drop"
-  reason = "agent_self_comment"
-}
-
-route "human_comment" {
-  when   = action.type == "commentCard"
-  do     = "dispatch"
-  reason = "human_comment"
-}
-
-route "card_deleted" {
-  when   = action.type == "deleteCard"
-  do     = "terminate"
-  reason = "card_deleted"
-}
-
-route "deleteComment_not_handled" {
-  when   = action.type == "deleteComment"
-  do     = "drop"
-  reason = "deleteComment_not_handled"
-}
-
-route "unsupported_action_type" {
-  when   = true
-  do     = "drop"
-  reason = "unsupported_action_type"
-}
-`
-
 func sampleView() *kanban.Resolved {
 	return &kanban.Resolved{
 		BoardID: "B1",
@@ -126,7 +30,7 @@ func sampleView() *kanban.Resolved {
 
 func newSampleEngine(t *testing.T) (*Engine, *bytes.Buffer) {
 	t.Helper()
-	cfg, err := DecodeConfig([]byte(sampleRoutesHCL), "sample.hcl")
+	cfg, err := DecodeConfig([]byte(DefaultRoutesHCL), "defaults.go::DefaultRoutesHCL")
 	if err != nil {
 		t.Fatalf("DecodeConfig: %v", err)
 	}
@@ -156,106 +60,106 @@ func TestEngineEvaluate(t *testing.T) {
 			wantReason: "no_card_id",
 		},
 		{
+			name:       "invalid card id falls through to the invalid_card_id route",
+			ev:         Event{Type: "updateCard", CardID: "../../etc/passwd", CardIDValid: false},
+			wantRoute:  "invalid_card_id",
+			wantDo:     ActionDrop,
+			wantReason: "invalid_card_id",
+		},
+		{
 			name:       "updateCard without list move",
-			ev:         Event{Type: "updateCard", CardID: "c1"},
+			ev:         Event{Type: "updateCard", CardID: "c1", CardIDValid: true},
 			wantRoute:  "updateCard_no_list_move",
 			wantDo:     ActionDrop,
 			wantReason: "updateCard_no_list_move",
 		},
 		{
 			name:       "moved to plan list",
-			ev:         Event{Type: "updateCard", CardID: "c1", ListAfter: "Analyze"},
+			ev:         Event{Type: "updateCard", CardID: "c1", CardIDValid: true, ListAfter: "Analyze"},
 			wantRoute:  "moved_to_plan_list",
 			wantDo:     ActionDispatch,
-			wantReason: "moved_to_plan_list",
+			wantReason: "moved_to_active_list",
 		},
 		{
 			name:       "moved to action list (case-insensitive)",
-			ev:         Event{Type: "updateCard", CardID: "c1", ListAfter: "In Action"},
+			ev:         Event{Type: "updateCard", CardID: "c1", CardIDValid: true, ListAfter: "In Action"},
 			wantRoute:  "moved_to_action_list",
 			wantDo:     ActionDispatch,
-			wantReason: "moved_to_action_list",
+			wantReason: "moved_to_active_list",
 		},
 		{
 			name:       "moved to done",
-			ev:         Event{Type: "updateCard", CardID: "c1", ListAfter: "Done"},
+			ev:         Event{Type: "updateCard", CardID: "c1", CardIDValid: true, ListAfter: "Done"},
 			wantRoute:  "moved_to_done",
 			wantDo:     ActionTerminate,
 			wantReason: "moved_to_done",
 		},
 		{
-			name:       "moved to wait list",
-			ev:         Event{Type: "updateCard", CardID: "c1", ListAfter: "Ready for review"},
+			name:       "moved to wait list (a declared wait sub-role)",
+			ev:         Event{Type: "updateCard", CardID: "c1", CardIDValid: true, ListAfter: "Ready for review"},
 			wantRoute:  "moved_to_wait_list",
 			wantDo:     ActionNotifyDeparture,
-			wantReason: "moved_to_wait_list",
+			wantReason: "moved_to_non_active_list",
 		},
 		{
-			name:       "moved to unclaimed list collapses to wait via UnclaimedListNames",
-			ev:         Event{Type: "updateCard", CardID: "c1", ListAfter: "Inbox"},
+			name:       "moved to a list not declared in kanban {} (catch-all wait)",
+			ev:         Event{Type: "updateCard", CardID: "c1", CardIDValid: true, ListAfter: "Mystery"},
 			wantRoute:  "moved_to_wait_list",
 			wantDo:     ActionNotifyDeparture,
-			wantReason: "moved_to_wait_list",
-		},
-		{
-			name:       "moved to list nobody knows",
-			ev:         Event{Type: "updateCard", CardID: "c1", ListAfter: "Mystery"},
-			wantRoute:  "moved_to_unknown_list",
-			wantDo:     ActionDrop,
-			wantReason: "moved_to_unknown_list",
+			wantReason: "moved_to_non_active_list",
 		},
 		{
 			name:       "createCard in plan list",
-			ev:         Event{Type: "createCard", CardID: "c1", ListName: "Analyze"},
+			ev:         Event{Type: "createCard", CardID: "c1", CardIDValid: true, ListName: "Analyze"},
 			wantRoute:  "created_in_plan_list",
 			wantDo:     ActionDispatch,
-			wantReason: "created_in_plan_list",
+			wantReason: "created_in_active_list",
 		},
 		{
 			name:       "createCard in non-active list",
-			ev:         Event{Type: "createCard", CardID: "c1", ListName: "Need Attention"},
+			ev:         Event{Type: "createCard", CardID: "c1", CardIDValid: true, ListName: "Need Attention"},
 			wantRoute:  "created_in_non_active_list",
 			wantDo:     ActionDrop,
 			wantReason: "created_in_non_active_list",
 		},
 		{
 			name:       "agent self comment via [agent]: prefix",
-			ev:         Event{Type: "commentCard", CardID: "c1", Comment: "[agent]: status"},
+			ev:         Event{Type: "commentCard", CardID: "c1", CardIDValid: true, Comment: "[agent]: status"},
 			wantRoute:  "agent_self_comment",
 			wantDo:     ActionDrop,
 			wantReason: "agent_self_comment",
 		},
 		{
 			name:       "agent self comment via [bot]: prefix",
-			ev:         Event{Type: "commentCard", CardID: "c1", Comment: "  [bot]: heartbeat"},
+			ev:         Event{Type: "commentCard", CardID: "c1", CardIDValid: true, Comment: "  [bot]: heartbeat"},
 			wantRoute:  "agent_self_comment",
 			wantDo:     ActionDrop,
 			wantReason: "agent_self_comment",
 		},
 		{
 			name:       "human comment dispatches",
-			ev:         Event{Type: "commentCard", CardID: "c1", Comment: "please retry"},
+			ev:         Event{Type: "commentCard", CardID: "c1", CardIDValid: true, Comment: "please retry"},
 			wantRoute:  "human_comment",
 			wantDo:     ActionDispatch,
 			wantReason: "human_comment",
 		},
 		{
 			name:       "card deleted terminates",
-			ev:         Event{Type: "deleteCard", CardID: "c1"},
+			ev:         Event{Type: "deleteCard", CardID: "c1", CardIDValid: true},
 			wantRoute:  "card_deleted",
 			wantDo:     ActionTerminate,
 			wantReason: "card_deleted",
 		},
 		{
 			name:       "deleteComment not handled",
-			ev:         Event{Type: "deleteComment", CardID: "c1"},
+			ev:         Event{Type: "deleteComment", CardID: "c1", CardIDValid: true},
 			wantRoute:  "deleteComment_not_handled",
 			wantDo:     ActionDrop,
 			wantReason: "deleteComment_not_handled",
 		},
 		{
 			name:       "unknown action type hits catch-all",
-			ev:         Event{Type: "addLabelToCard", CardID: "c1"},
+			ev:         Event{Type: "addLabelToCard", CardID: "c1", CardIDValid: true},
 			wantRoute:  "unsupported_action_type",
 			wantDo:     ActionDrop,
 			wantReason: "unsupported_action_type",
@@ -456,5 +360,36 @@ func TestLoadConfigFromExampleFile(t *testing.T) {
 	last := cfg.Routes[len(cfg.Routes)-1]
 	if last.Name != "unsupported_action_type" || last.Do != ActionDrop {
 		t.Errorf("expected catch-all unsupported_action_type drop as last route, got %+v", last)
+	}
+}
+
+// TestDefaultRoutesHCLMatchesExampleSet pins the rule label list +
+// per-rule `do`/`reason` strings against the example router.hcl. The
+// dispatcher falls back to DecodeConfig(DefaultRoutesHCL) when no
+// operator-provided engine is installed; if those two ever drift,
+// tests that rely on the dispatcher's default behaviour quietly
+// observe a different route set than production does.
+func TestDefaultRoutesHCLMatchesExampleSet(t *testing.T) {
+	exPath := filepath.Join("..", "..", "..", "examples", "router", "router.hcl")
+	if _, err := os.Stat(exPath); err != nil {
+		t.Skipf("example router.hcl not found at %s: %v", exPath, err)
+	}
+	exCfg, err := LoadConfig(exPath)
+	if err != nil {
+		t.Fatalf("LoadConfig(%s): %v", exPath, err)
+	}
+	defCfg, err := DecodeConfig([]byte(DefaultRoutesHCL), "defaults.go::DefaultRoutesHCL")
+	if err != nil {
+		t.Fatalf("DecodeConfig(DefaultRoutesHCL): %v", err)
+	}
+	if len(defCfg.Routes) != len(exCfg.Routes) {
+		t.Fatalf("route count mismatch: default=%d example=%d", len(defCfg.Routes), len(exCfg.Routes))
+	}
+	for i := range defCfg.Routes {
+		d, e := defCfg.Routes[i], exCfg.Routes[i]
+		if d.Name != e.Name || d.Do != e.Do || d.Reason != e.Reason {
+			t.Errorf("route[%d] drift:\n  default = %s/%s/%s\n  example = %s/%s/%s",
+				i, d.Name, d.Do, d.Reason, e.Name, e.Do, e.Reason)
+		}
 	}
 }

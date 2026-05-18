@@ -647,8 +647,10 @@ func assembleWorkerSystemPrompt(cardID string, bs workerBootstrap, playbooks *pr
 // rendered system prompt).
 func loadSkeletonPrompts(playbooks *prompttmpl.Renderer) (bootstrap, identity, worker, tools, user, override string) {
 	if playbooks == nil {
-		w, src := prompts.ResolveWorker()
-		return prompts.Bootstrap, prompts.Identity, w, prompts.Tools, prompts.User, src
+		// No --playbooks-dir wired in (only happens in unit tests):
+		// fall back to the embedded skeleton snapshots. There is no
+		// override path to surface in this branch.
+		return prompts.Bootstrap, prompts.Identity, prompts.EmbeddedWorker(), prompts.Tools, prompts.User, ""
 	}
 	bootstrap = readSkeleton(playbooks, "BOOTSTRAP.md", prompts.Bootstrap)
 	identity = readSkeleton(playbooks, "IDENTITY.md", prompts.Identity)

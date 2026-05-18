@@ -153,6 +153,16 @@ func main() {
 	}
 	runner.SetRuleEngine(router.NewRuleEngine(ruleCfg, cfg.RouterDir, resolved, logger))
 
+	// Load the HCL `route {}` blocks the same way and hand the engine
+	// to the dispatcher so every Trello event is classified by the
+	// operator-managed router.hcl rather than the legacy Go switch
+	// that lived in internal/app/routing.go before #6 landed.
+	routeCfg, routeErr := router.LoadConfig(hclPath)
+	if routeErr != nil {
+		logger.Fatalf("event=route_load_failed hcl_path=%s err=%v", hclPath, routeErr)
+	}
+	runner.Dispatcher().SetRouteEngine(router.NewEngine(routeCfg, resolved, logger))
+
 	// Register the AzureRM provider refresh hook: when the per-card
 	// work_dir turns out to be a clone of hashicorp/terraform-provider-azurerm
 	// (detected by go.mod's first line), synchronously refresh the

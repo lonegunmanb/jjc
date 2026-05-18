@@ -115,12 +115,15 @@ kanban {
 # 2. Event routing  (replaces routing.go's Route())
 # -----------------------------------------------------------------------------
 # Variables visible in `when`:
-#   action.type        ∈ "updateCard" | "createCard" | "commentCard"
-#                        | "deleteCard" | "deleteComment" | <other>
-#   action.card_id     string; "" when the event has no card id
-#   action.list_after  string; non-empty only for an updateCard list move
-#   action.list_name   string; createCard's destination list (data.list.name)
-#   action.comment     string; commentCard's text (data.text)
+#   action.type           ∈ "updateCard" | "createCard" | "commentCard"
+#                           | "deleteCard" | "deleteComment" | <other>
+#   action.card_id        string; "" when the event has no card id
+#   action.card_id_valid  bool; false when card_id failed the gateway's
+#                         path-traversal safety check (always true when
+#                         action.card_id == "")
+#   action.list_after     string; non-empty only for an updateCard list move
+#   action.list_name      string; createCard's destination list (data.list.name)
+#   action.comment        string; commentCard's text (data.text)
 #
 # `do` field values:
 #   "drop"             ignore the event
@@ -136,6 +139,17 @@ route "no_card_id" {
   when   = action.card_id == ""
   do     = "drop"
   reason = "no_card_id"
+}
+
+# Defence-in-depth: a malformed cardID will eventually reach
+# filepath.Join(baseDir, cardID) inside the gateway. The dispatcher pre-
+# validates every cardID before evaluation so this rule fires as soon as
+# an attacker-crafted webhook tries to slip a path-traversal token past
+# the no_card_id gate above.
+route "invalid_card_id" {
+  when   = action.card_id != "" && !action.card_id_valid
+  do     = "drop"
+  reason = "invalid_card_id"
 }
 
 # ---- updateCard (a card was edited or moved) --------------------------------
@@ -156,31 +170,27 @@ route "moved_to_plan_list" {
   when   = (action.type == "updateCard"
         && contains(kanban.plan_lists, lower(action.list_after)))
   do     = "dispatch"
-  reason = "moved_to_plan_list"
+  reason = "moved_to_active_list"
 }
 
 route "moved_to_action_list" {
   when   = (action.type == "updateCard"
         && contains(kanban.action_lists, lower(action.list_after)))
   do     = "dispatch"
-  reason = "moved_to_action_list"
+  reason = "moved_to_active_list"
 }
 
+# Catch-all for any updateCard list move that did not match a plan /
+# action / done role above. This includes every wait sub-role (Ready
+# for plan review, Ready for review, Pending PR, Need Attention) AND
+# every unclaimed list on the board (lists not declared in kanban {}).
+# All of them collapse to notify_departure so a worker, if one exists,
+# winds down its in-flight work; the dispatcher drops the event when
+# no worker is registered for the card.
 route "moved_to_wait_list" {
-  when   = (action.type == "updateCard"
-        && contains(kanban.wait_lists, lower(action.list_after)))
-  do     = "notify_departure"
-  reason = "moved_to_wait_list"
-}
-
-# Reached only when the card was moved INTO a list that is not registered
-# under any role in kanban {}. This is a kanban-config bug — every list on
-# the board should be claimed by exactly one role. Drop with a loud reason
-# so the operator notices in the log.
-route "moved_to_unknown_list" {
   when   = action.type == "updateCard" && action.list_after != ""
-  do     = "drop"
-  reason = "moved_to_unknown_list"
+  do     = "notify_departure"
+  reason = "moved_to_non_active_list"
 }
 
 # ---- createCard (a new card was added) --------------------------------------
@@ -190,14 +200,14 @@ route "created_in_plan_list" {
   when   = (action.type == "createCard"
         && contains(kanban.plan_lists, lower(action.list_name)))
   do     = "dispatch"
-  reason = "created_in_plan_list"
+  reason = "created_in_active_list"
 }
 
 route "created_in_action_list" {
   when   = (action.type == "createCard"
         && contains(kanban.action_lists, lower(action.list_name)))
   do     = "dispatch"
-  reason = "created_in_action_list"
+  reason = "created_in_active_list"
 }
 
 route "created_in_non_active_list" {
