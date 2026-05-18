@@ -156,9 +156,7 @@ func buildKanbanValue(view *kanban.Resolved) cty.Value {
 		for _, n := range view.UnclaimedListNames {
 			waitNames = append(waitNames, normaliseListName(n))
 		}
-		for _, p := range view.AgentCommentPrefixes {
-			prefixes = append(prefixes, p)
-		}
+		prefixes = append(prefixes, view.AgentCommentPrefixes...)
 		plan = cty.ObjectVal(map[string]cty.Value{"name": cty.StringVal(view.Plan.Name)})
 		action = cty.ObjectVal(map[string]cty.Value{"name": cty.StringVal(view.Action.Name)})
 		done = cty.ObjectVal(map[string]cty.Value{"name": cty.StringVal(view.Done.Name)})
