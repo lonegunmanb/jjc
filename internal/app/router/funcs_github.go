@@ -2,6 +2,7 @@ package router
 
 import (
 	"regexp"
+	"strings"
 
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/function"
@@ -22,11 +23,10 @@ func (g GitHubIssue) Present() bool {
 	return g.Owner != "" && g.Repo != ""
 }
 
-// githubURLPattern matches https?://github.com/{owner}/{repo}/(issues|pull)/{number}
-// with the owner/repo segments restricted to GitHub's character set. The
-// trailing number is captured greedy-digit so query strings or anchors don't
-// pollute it.
-var githubURLPattern = regexp.MustCompile(`https?://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/(issues|pull)/(\d+)`)
+// githubURLPattern matches a GitHub issue/PR URL when evaluation starts at
+// the URL boundary. ParseGitHubIssue scans for github.com URL starts first so
+// embedded URLs still extract while the regex itself remains anchored.
+var githubURLPattern = regexp.MustCompile(`^https?://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/(issues|pull)/(\d+)`)
 
 var githubIssueType = cty.Object(map[string]cty.Type{
 	"owner":  cty.String,
@@ -60,19 +60,27 @@ var githubIssueFunc = function.New(&function.Spec{
 // ParseGitHubIssue extracts the first GitHub issue or PR URL in s. It
 // returns the zero value when s contains no recognisable GitHub URL.
 func ParseGitHubIssue(s string) GitHubIssue {
-	m := githubURLPattern.FindStringSubmatch(s)
-	if m == nil {
-		return GitHubIssue{}
+	lower := strings.ToLower(s)
+	for i := 0; i < len(s); i++ {
+		if !strings.HasPrefix(lower[i:], "https://github.com/") &&
+			!strings.HasPrefix(lower[i:], "http://github.com/") {
+			continue
+		}
+		m := githubURLPattern.FindStringSubmatch(s[i:])
+		if m == nil {
+			continue
+		}
+		kind := "issue"
+		if m[3] == "pull" {
+			kind = "pr"
+		}
+		return GitHubIssue{
+			Owner:  m[1],
+			Repo:   m[2],
+			Number: m[4],
+			Kind:   kind,
+			URL:    m[0],
+		}
 	}
-	kind := "issue"
-	if m[3] == "pull" {
-		kind = "pr"
-	}
-	return GitHubIssue{
-		Owner:  m[1],
-		Repo:   m[2],
-		Number: m[4],
-		Kind:   kind,
-		URL:    m[0],
-	}
+	return GitHubIssue{}
 }
