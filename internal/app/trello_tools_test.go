@@ -66,6 +66,15 @@ func (f *fakeTrelloClient) ListCommentsSince(ctx context.Context, id string, sin
 	}
 	return f.listCommentsSince(ctx, id, since)
 }
+func (f *fakeTrelloClient) ListTokenWebhooks(context.Context, string) ([]trelloclient.Webhook, error) {
+	return nil, errors.New("listTokenWebhooks not implemented")
+}
+func (f *fakeTrelloClient) UpdateWebhookCallback(context.Context, string, string) error {
+	return errors.New("updateWebhookCallback not implemented")
+}
+func (f *fakeTrelloClient) CreateTokenWebhook(context.Context, string, string, string, string) (trelloclient.Webhook, error) {
+	return trelloclient.Webhook{}, errors.New("createTokenWebhook not implemented")
+}
 
 func quietLogger() *log.Logger { return log.New(io.Discard, "", 0) }
 

@@ -26,6 +26,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	t.Setenv("TRELLO_API_KEY", "env-key")
 	t.Setenv("TRELLO_API_TOKEN", "env-token")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
+	t.Setenv("TRELLO_GATEWAY_TUNNEL", "none")
 	t.Setenv("COPILOT_MODEL", "env-model")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
@@ -47,6 +48,9 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	if cfg.CallbackURL != "https://env.example.com/trello" {
 		t.Fatalf("unexpected callback: %s", cfg.CallbackURL)
 	}
+	if cfg.Tunnel != "none" {
+		t.Fatalf("unexpected tunnel: %s", cfg.Tunnel)
+	}
 	if cfg.CopilotModel != "env-model" {
 		t.Fatalf("unexpected copilot model: %s", cfg.CopilotModel)
 	}
@@ -61,6 +65,7 @@ func TestLoadConfigFlagOverridesEnv(t *testing.T) {
 	t.Setenv("TRELLO_API_KEY", "env-key")
 	t.Setenv("TRELLO_API_TOKEN", "env-token")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
+	t.Setenv("TRELLO_GATEWAY_TUNNEL", "none")
 	t.Setenv("COPILOT_MODEL", "env-model")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
@@ -95,7 +100,6 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("TRELLO_API_SECRET", "env-secret")
 	t.Setenv("TRELLO_API_KEY", "env-key")
 	t.Setenv("TRELLO_API_TOKEN", "env-token")
-	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
 
@@ -110,6 +114,12 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.CopilotModel != DefaultCopilotModel {
 		t.Fatalf("expected default copilot model %q, got %q", DefaultCopilotModel, cfg.CopilotModel)
 	}
+	if cfg.Tunnel != "cloudflared" {
+		t.Fatalf("expected default tunnel cloudflared, got %q", cfg.Tunnel)
+	}
+	if cfg.CallbackURL != "" {
+		t.Fatalf("callback URL should be empty before auto-tunnel starts, got %q", cfg.CallbackURL)
+	}
 }
 
 func TestLoadConfigPlaybooksDirMissing(t *testing.T) {
@@ -117,6 +127,7 @@ func TestLoadConfigPlaybooksDirMissing(t *testing.T) {
 	t.Setenv("TRELLO_API_KEY", "env-key")
 	t.Setenv("TRELLO_API_TOKEN", "env-token")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
+	t.Setenv("TRELLO_GATEWAY_TUNNEL", "none")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", filepath.Join(t.TempDir(), "does-not-exist"))
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
 
@@ -133,6 +144,7 @@ func TestLoadConfigKanbanBoardIDRequired(t *testing.T) {
 	t.Setenv("TRELLO_API_KEY", "env-key")
 	t.Setenv("TRELLO_API_TOKEN", "env-token")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
+	t.Setenv("TRELLO_GATEWAY_TUNNEL", "none")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
 	// Intentionally do NOT set TRELLO_KANBAN_BOARD_ID.
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "")
@@ -144,6 +156,52 @@ func TestLoadConfigKanbanBoardIDRequired(t *testing.T) {
 	if !strings.Contains(err.Error(), "kanban board id") {
 		t.Fatalf("error should mention kanban board id: %v", err)
 	}
+}
+
+func TestLoadConfigTunnelValidation(t *testing.T) {
+	baseEnv := func(t *testing.T) {
+		t.Helper()
+		t.Setenv("TRELLO_API_SECRET", "env-secret")
+		t.Setenv("TRELLO_API_KEY", "env-key")
+		t.Setenv("TRELLO_API_TOKEN", "env-token")
+		t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
+		t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
+	}
+
+	t.Run("none requires callback URL", func(t *testing.T) {
+		baseEnv(t)
+		_, err := LoadConfig([]string{"cmd", "--tunnel", "none"})
+		if err == nil || !strings.Contains(err.Error(), "when --tunnel=none") {
+			t.Fatalf("expected callback-url required error, got %v", err)
+		}
+	})
+
+	t.Run("cloudflared rejects callback URL", func(t *testing.T) {
+		baseEnv(t)
+		_, err := LoadConfig([]string{"cmd", "--callback-url", "https://example.com/"})
+		if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+			t.Fatalf("expected mutually exclusive error, got %v", err)
+		}
+	})
+
+	t.Run("unknown tunnel rejected", func(t *testing.T) {
+		baseEnv(t)
+		_, err := LoadConfig([]string{"cmd", "--tunnel", "ngrok"})
+		if err == nil || !strings.Contains(err.Error(), "unknown tunnel provider") {
+			t.Fatalf("expected unknown tunnel error, got %v", err)
+		}
+	})
+
+	t.Run("empty tunnel uses default", func(t *testing.T) {
+		baseEnv(t)
+		cfg, err := LoadConfig([]string{"cmd", "--tunnel", ""})
+		if err != nil {
+			t.Fatalf("load config: %v", err)
+		}
+		if cfg.Tunnel != "cloudflared" {
+			t.Fatalf("expected empty tunnel to default to cloudflared, got %q", cfg.Tunnel)
+		}
+	})
 }
 
 // TestRedactedDoesNotLeakPrefix pins the contract that redact() never
@@ -160,6 +218,7 @@ func TestRedactedDoesNotLeakPrefix(t *testing.T) {
 		TrelloAPIKey:   "WWWWapikeyWWWW0123456789abcdef0123456789abcdef",
 		TrelloAPIToken: "EEEEapitokenEEEE9876543210abcdef9876543210",
 		CallbackURL:    "https://example.com/trello",
+		Tunnel:         "none",
 		CopilotModel:   "m",
 		RouterDir:      "r",
 		PlaybooksDir:   "p",
@@ -195,6 +254,7 @@ func TestRedactedCoversEverySensitiveField(t *testing.T) {
 		TrelloAPIKey:   "trelloapikeyvalue",
 		TrelloAPIToken: "trelloapitokenvalue",
 		CallbackURL:    "url",
+		Tunnel:         "none",
 		CopilotModel:   "model",
 		RouterDir:      "router",
 		PlaybooksDir:   "playbooks",
@@ -246,6 +306,7 @@ func TestRedactedMentionsEveryNonSensitiveField(t *testing.T) {
 		TrelloAPIKey:   "REDACTED_TEST_KEY",
 		TrelloAPIToken: "REDACTED_TEST_TOKEN",
 		CallbackURL:    "REDACTED_TEST_URL",
+		Tunnel:         "REDACTED_TEST_TUNNEL",
 		CopilotModel:   "REDACTED_TEST_MODEL",
 		RouterDir:      "REDACTED_TEST_ROUTER",
 		PlaybooksDir:   "REDACTED_TEST_PLAYBOOKS",

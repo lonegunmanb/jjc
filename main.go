@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -23,6 +24,7 @@ import (
 	"github.com/lonegunmanb/trello-copilot/internal/app/prompttmpl"
 	"github.com/lonegunmanb/trello-copilot/internal/app/router"
 	"github.com/lonegunmanb/trello-copilot/internal/app/trelloclient"
+	"github.com/lonegunmanb/trello-copilot/internal/app/tunnel"
 )
 
 // kanbanFetcherAdapter bridges trelloclient.Client (which returns
@@ -186,6 +188,27 @@ func main() {
 
 	globalLog := app.NewGlobalEventLog(128)
 	runner.Dispatcher().SetGlobalLog(globalLog)
+
+	// Establish the shutdown context before the HTTP server so validation
+	// requests, tunnel startup and background dispatch all share the same
+	// SIGINT/SIGTERM cancellation signal.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	var tunnelProvider tunnel.Provider
+	if cfg.Tunnel == tunnel.Cloudflared {
+		p, perr := tunnel.NewCloudflaredProvider(tunnel.WithLogger(logger))
+		if perr != nil {
+			logger.Fatalf("event=tunnel_provider_init_failed provider=%s err=%v", cfg.Tunnel, perr)
+		}
+		tunnelProvider = p
+		defer func() {
+			if err := tunnelProvider.Stop(); err != nil {
+				logger.Printf("event=tunnel_stop_failed provider=%s err=%v", tunnelProvider.Name(), err)
+			}
+		}()
+	}
+
 	startCtx, startCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	if err := runner.Start(startCtx); err != nil {
 		startCancel()
@@ -198,18 +221,10 @@ func main() {
 		}
 	}()
 
-	// Establish the shutdown context before the router so background
-	// dispatch goroutines spawned by the router inherit it. Cancelling
-	// this context (via SIGINT/SIGTERM or the TUI quitting) cancels
-	// every in-flight dispatch the router started.
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	router := app.NewRouter(ctx, cfg, runner, logger)
-
+	handler := app.NewSwitchableHandler(app.NewValidationHandler(logger))
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           router,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		// Slow-loris and slow-write defence: cap the time we'll spend
 		// reading a body or writing a response for any one request.
@@ -221,12 +236,29 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
+	ln, lerr := net.Listen("tcp", cfg.ListenAddr)
+	if lerr != nil {
+		logger.Fatalf("event=http_listen_failed addr=%s err=%v", cfg.ListenAddr, lerr)
+	}
+	cfg.ListenAddr = ln.Addr().String()
 	go func() {
 		logger.Printf("event=http_listening addr=%s", cfg.ListenAddr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			logger.Fatalf("event=http_server_error err=%v", err)
 		}
 	}()
+
+	if cfg.Tunnel != tunnel.None {
+		tunnelCtx, tunnelCancel := context.WithTimeout(ctx, 60*time.Second)
+		if _, err := app.StartTunnelAndReconcile(tunnelCtx, &cfg, tunnelProvider, trelloClient, cfg.ListenAddr, logger); err != nil {
+			tunnelCancel()
+			logger.Fatalf("event=tunnel_start_failed provider=%s err=%v", cfg.Tunnel, err)
+		}
+		tunnelCancel()
+	}
+
+	router := app.NewRouter(ctx, cfg, runner, logger)
+	handler.Set(router)
 
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		// TUI mode: full-screen bubbletea interface.

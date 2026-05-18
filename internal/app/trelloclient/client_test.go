@@ -97,6 +97,73 @@ func TestGetCardRejectsEmptyID(t *testing.T) {
 	}
 }
 
+func TestReconcileBoardWebhookUpdatesExistingBoardWebhook(t *testing.T) {
+	var requests []string
+	c, _, done := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/tokens/tok/webhooks":
+			_, _ = w.Write([]byte(`[
+				{"id":"other","idModel":"other-board","callbackURL":"https://old.example/"},
+				{"id":"hook-1","idModel":"board-1","callbackURL":"https://old.example/"}
+			]`))
+		case r.Method == http.MethodPut && r.URL.Path == "/webhooks/hook-1":
+			if got := r.URL.Query().Get("callbackURL"); got != "https://formal-sent-saw-gpl.trycloudflare.com/" {
+				t.Fatalf("callbackURL query: got %q", got)
+			}
+			_, _ = w.Write([]byte(`{"id":"hook-1"}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	})
+	defer done()
+
+	id, err := ReconcileBoardWebhook(context.Background(), c, "tok", "board-1", "https://formal-sent-saw-gpl.trycloudflare.com/")
+	if err != nil {
+		t.Fatalf("ReconcileBoardWebhook: %v", err)
+	}
+	if id != "hook-1" {
+		t.Fatalf("webhook id: got %q", id)
+	}
+	if len(requests) != 2 || !strings.HasPrefix(requests[1], "PUT /webhooks/hook-1?") {
+		t.Fatalf("expected GET then PUT, got %#v", requests)
+	}
+}
+
+func TestReconcileBoardWebhookCreatesWhenMissing(t *testing.T) {
+	var sawPost bool
+	c, _, done := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/tokens/tok/webhooks":
+			_, _ = w.Write([]byte(`[{"id":"other","idModel":"other-board"}]`))
+		case r.Method == http.MethodPost && r.URL.Path == "/tokens/tok/webhooks":
+			sawPost = true
+			q := r.URL.Query()
+			if q.Get("callbackURL") != "https://formal-sent-saw-gpl.trycloudflare.com/" {
+				t.Fatalf("callbackURL query: got %q", q.Get("callbackURL"))
+			}
+			if q.Get("idModel") != "board-1" {
+				t.Fatalf("idModel query: got %q", q.Get("idModel"))
+			}
+			if q.Get("description") != "trello-copilot-gateway" {
+				t.Fatalf("description query: got %q", q.Get("description"))
+			}
+			_, _ = w.Write([]byte(`{"id":"new-hook","idModel":"board-1"}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	})
+	defer done()
+
+	id, err := ReconcileBoardWebhook(context.Background(), c, "tok", "board-1", "https://formal-sent-saw-gpl.trycloudflare.com/")
+	if err != nil {
+		t.Fatalf("ReconcileBoardWebhook: %v", err)
+	}
+	if id != "new-hook" || !sawPost {
+		t.Fatalf("expected created webhook id, got id=%q sawPost=%v", id, sawPost)
+	}
+}
+
 func TestGetCardSurfacesNon2xx(t *testing.T) {
 	c, _, done := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -402,9 +469,9 @@ func TestGetLatestCommentDoesNotPaginate(t *testing.T) {
 
 func TestFirstNonEmptyLine(t *testing.T) {
 	cases := map[string]string{
-		"":                   "",
-		"   \n\t\n":          "",
-		"first":              "first",
+		"":                    "",
+		"   \n\t\n":           "",
+		"first":               "first",
 		"\n\n  hello  \nrest": "hello",
 	}
 	for in, want := range cases {
