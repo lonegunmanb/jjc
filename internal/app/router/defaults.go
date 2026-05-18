@@ -32,43 +32,58 @@ route "invalid_card_id" {
 }
 
 route "updateCard_no_list_move" {
-  when   = action.type == "updateCard" && action.list_after == ""
+  when   = action.type == "updateCard" && action.list_after_id == "" && action.list_after == ""
   do     = "drop"
   reason = "updateCard_no_list_move"
 }
 
 route "moved_to_done" {
-  when   = action.type == "updateCard" && contains(kanban.done_lists, lower(action.list_after))
+  when   = action.type == "updateCard" && (
+             contains(kanban.done_list_ids, action.list_after_id)
+             || contains(kanban.done_lists, lower(action.list_after))
+           )
   do     = "terminate"
   reason = "moved_to_done"
 }
 
 route "moved_to_plan_list" {
-  when   = action.type == "updateCard" && contains(kanban.plan_lists, lower(action.list_after))
+  when   = action.type == "updateCard" && (
+             contains(kanban.plan_list_ids, action.list_after_id)
+             || contains(kanban.plan_lists, lower(action.list_after))
+           )
   do     = "dispatch"
   reason = "moved_to_active_list"
 }
 
 route "moved_to_action_list" {
-  when   = action.type == "updateCard" && contains(kanban.action_lists, lower(action.list_after))
+  when   = action.type == "updateCard" && (
+             contains(kanban.action_list_ids, action.list_after_id)
+             || contains(kanban.action_lists, lower(action.list_after))
+           )
   do     = "dispatch"
   reason = "moved_to_active_list"
 }
 
 route "moved_to_wait_list" {
-  when   = action.type == "updateCard" && action.list_after != ""
+  when   = action.type == "updateCard" && (action.list_after_id != "" || action.list_after != "")
   do     = "notify_departure"
   reason = "moved_to_non_active_list"
 }
 
 route "created_in_plan_list" {
-  when   = action.type == "createCard" && contains(kanban.plan_lists, lower(action.list_name))
+  when   = action.type == "createCard" && (
+             contains(kanban.plan_list_ids, action.list_id)
+             || contains(kanban.plan_lists, lower(action.list_name))
+           )
   do     = "dispatch"
   reason = "created_in_active_list"
 }
 
 route "created_in_action_list" {
-  when   = action.type == "createCard" && contains(kanban.action_lists, lower(action.list_name))
+  when   = action.type == "createCard" && (
+             contains(kanban.action_list_ids, action.list_id)
+             || contains(kanban.action_lists, lower(action.list_name))
+           )
   do     = "dispatch"
   reason = "created_in_active_list"
 }

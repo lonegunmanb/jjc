@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/lonegunmanb/trello-copilot/internal/app/router"
 )
 
 // fakeSession captures every prompt sent to it. Each fakeSession is bound
@@ -57,11 +59,11 @@ func (f *fakeSession) Disconnect() error {
 // fakeFactory hands out a unique fakeSession per cardID and tracks
 // creation order.
 type fakeFactory struct {
-	delay      time.Duration
-	mu         sync.Mutex
-	sessions   map[string]*fakeSession
+	delay       time.Duration
+	mu          sync.Mutex
+	sessions    map[string]*fakeSession
 	createOrder []string
-	createErr  error
+	createErr   error
 }
 
 func newFakeFactory() *fakeFactory {
@@ -103,6 +105,59 @@ func waitFor(t *testing.T, deadline time.Duration, cond func() bool, msg string)
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timeout waiting for: %s", msg)
+}
+
+func TestEvaluateRoutePopulatesListIDs(t *testing.T) {
+	cfg, err := router.DecodeConfig([]byte(`
+route "moved_by_id" {
+  when   = action.type == "updateCard" && action.list_after_id == "L_PLAN"
+  do     = "dispatch"
+  reason = "moved_by_id"
+}
+
+route "created_by_id" {
+  when   = action.type == "createCard" && action.list_id == "L_ACTION"
+  do     = "dispatch"
+  reason = "created_by_id"
+}
+
+route "catch_all" {
+  when   = true
+  do     = "drop"
+  reason = "catch_all"
+}
+`), "ids.hcl")
+	if err != nil {
+		t.Fatalf("DecodeConfig: %v", err)
+	}
+
+	cases := []struct {
+		name       string
+		body       string
+		wantReason string
+	}{
+		{
+			name:       "updateCard listAfter id",
+			body:       `{"action":{"type":"updateCard","data":{"card":{"id":"card1"},"listAfter":{"id":"L_PLAN","name":"Renamed"}}}}`,
+			wantReason: "moved_by_id",
+		},
+		{
+			name:       "createCard list id",
+			body:       `{"action":{"type":"createCard","data":{"card":{"id":"card1"},"list":{"id":"L_ACTION","name":"Renamed"}}}}`,
+			wantReason: "created_by_id",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := NewDispatcher(log.Default(), newFakeFactory())
+			d.SetRouteEngine(router.NewEngine(cfg, nil, log.Default()))
+			got := d.evaluateRoute([]byte(tc.body))
+			if got.Action != RouteDispatch || got.Reason != tc.wantReason {
+				t.Errorf("evaluateRoute() = %+v; want action=%s reason=%s", got, RouteDispatch, tc.wantReason)
+			}
+		})
+	}
 }
 
 func TestDispatcherDifferentCardsRunInParallel(t *testing.T) {
