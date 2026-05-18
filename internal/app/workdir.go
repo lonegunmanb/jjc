@@ -26,7 +26,7 @@ type WorkDirInfo struct {
 	// (currently always C:\project\<card_id>).
 	WorkDir string
 
-	// Classification mirrors the result of ClassifyCard for the card.
+	// Classification carries rule/GitHub metadata for the card.
 	// Owner / Repo / Number / URL may be empty when no GitHub URL was
 	// found in the card description (generic cards).
 	Classification CardClassification

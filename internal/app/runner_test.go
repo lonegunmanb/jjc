@@ -151,7 +151,7 @@ func TestAssembleWorkerSystemPromptInlinesPlaybook(t *testing.T) {
 	bs := workerBootstrap{
 		cardID: "card-1",
 		classification: CardClassification{
-			WorkType: WorkTypeProviderAzureRM,
+			RuleName: "azurerm_provider_issue",
 			GitHub: GitHubRef{
 				ItemKind: GitHubItemKindIssue,
 				Owner:    "hashicorp",
@@ -160,18 +160,21 @@ func TestAssembleWorkerSystemPromptInlinesPlaybook(t *testing.T) {
 				URL:      "https://github.com/hashicorp/terraform-provider-azurerm/issues/32258",
 			},
 		},
-		playbookFilename: "azurerm_provider_issue.md",
-		playbookPath:     `C:\fake\azurerm_provider_issue.md`,
-		playbookContent:  "# AZURERM ISSUE PLAYBOOK\n\nStep A: classify.\n",
+		ruleName: "azurerm_provider_issue",
+		playbooks: []workerPlaybook{{
+			Name:    "azurerm_provider_issue.md",
+			Path:    `C:\fake\azurerm_provider_issue.md`,
+			Content: "# AZURERM ISSUE PLAYBOOK\n\nStep A: classify.\n",
+		}},
 	}
 	got := assembleWorkerSystemPrompt("card-1", bs, nil, nil)
 	for _, must := range []string{
-		"work_type: terraform-provider-azurerm",
+		"matched_rule: azurerm_provider_issue",
 		"kind: issue",
 		"github_repo: hashicorp/terraform-provider-azurerm",
 		"github_number: 32258",
-		"entry_playbook: ",
-		"## ENTRY PLAYBOOK — azurerm_provider_issue.md",
+		"rule_playbook: ",
+		"## RULE PLAYBOOK — azurerm_provider_issue.md",
 		"# AZURERM ISSUE PLAYBOOK",
 	} {
 		if !strings.Contains(got, must) {

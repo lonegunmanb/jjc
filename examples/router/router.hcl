@@ -1,22 +1,20 @@
 # =============================================================================
-# router.hcl — sample router configuration (NOT WIRED IN YET)
+# router.hcl — sample router configuration
 # -----------------------------------------------------------------------------
-# This file shows what `--router-dir` could contain once the HCL-based router
-# is implemented (issues #5 / #6 / #7). Today the routing + classification
-# logic lives in:
+# This file shows what `--router-dir/router.hcl` contains for the HCL-based
+# router. The routing + classification logic lives in:
 #
-#   internal/app/routing.go    (Route)
-#   internal/app/worktype.go   (ClassifyCard, EntryPlaybookFilename)
+#   internal/app/router/       (route engine, rule engine, github_issue)
 #
 # The playbook loader / `{{<basename>}}` template renderer THIS FILE relies
-# on (for `prompts = [...]`) IS implemented (issue #8). See:
+# on (for `prompts = [...]`) is implemented. See:
 #
 #   internal/app/prompttmpl/   (Renderer)
 #
 # Reading order top-to-bottom:
-#   1. kanban {}            — list-name knobs (issue #5)
-#   2. route {} blocks      — what to do with each Trello webhook event (#6)
-#   3. rule {} blocks       — which playbooks to load for the matched card (#7)
+#   1. kanban {}            — list-name knobs
+#   2. route {} blocks      — what to do with each Trello webhook event
+#   3. rule {} blocks       — which playbooks to load for the matched card
 #
 # Match semantics (the only thing you need to know):
 #   - route / rule blocks are tried top-down.
@@ -249,7 +247,7 @@ route "unsupported_action_type" {
 
 # =============================================================================
 # 3. Card classification + prompt selection
-#    (replaces worktype.go ClassifyCard + EntryPlaybookFilename)
+#    (replaces the former worktype.go classification)
 # -----------------------------------------------------------------------------
 # Variables visible in `when`:
 #   card.id         string

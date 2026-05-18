@@ -21,6 +21,7 @@ import (
 	"github.com/lonegunmanb/trello-copilot/internal/app/kanban"
 	"github.com/lonegunmanb/trello-copilot/internal/app/prompts"
 	"github.com/lonegunmanb/trello-copilot/internal/app/prompttmpl"
+	"github.com/lonegunmanb/trello-copilot/internal/app/router"
 	"github.com/lonegunmanb/trello-copilot/internal/app/trelloclient"
 )
 
@@ -110,6 +111,7 @@ func main() {
 	}
 	runner.SetTrelloClient(trelloClient)
 	runner.SetCardInfoFetcher(app.NewSDKCardInfoFetcher(trelloClient))
+	runner.SetCardSignalsFetcher(app.NewSDKCardSignalsFetcher(trelloClient))
 	runner.SetPlaybooks(renderer)
 
 	// Resolve the kanban {} block in router.hcl against the configured
@@ -143,6 +145,13 @@ func main() {
 		resolved.BoardID, resolved.Plan.ID, resolved.Action.ID, resolved.Done.ID,
 		len(resolved.WaitListIDs), len(resolved.UnclaimedListNames))
 	runner.SetKanbanView(resolved)
+
+	ruleCfg, ruleErr := router.LoadRuleConfig(hclPath, cfg.PlaybooksDir)
+	if ruleErr != nil {
+		logger.Fatalf("event=rule_load_failed hcl_path=%s playbooks_dir=%s err=%v",
+			hclPath, cfg.PlaybooksDir, ruleErr)
+	}
+	runner.SetRuleEngine(router.NewRuleEngine(ruleCfg, cfg.RouterDir, resolved, logger))
 
 	// Register the AzureRM provider refresh hook: when the per-card
 	// work_dir turns out to be a clone of hashicorp/terraform-provider-azurerm

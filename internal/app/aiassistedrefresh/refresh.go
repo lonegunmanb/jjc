@@ -50,7 +50,7 @@ const userProfileSubdir = ".terraform-azurerm-ai-installer"
 // up to seven digits (well above today's max). This is tighter than the
 // legacy PowerShell wrapper's `^[A-Za-z0-9._-]+$` (which would have
 // accepted refs like `..`, `.lock`, or `-help`) but matches every value
-// ClassifyCard actually produces.
+// card rule-input parsing actually produces.
 var issueArgPattern = regexp.MustCompile(`^[1-9][0-9]{0,6}$`)
 
 // Options captures the inputs the legacy refresh-copilot-setup.ps1 script
