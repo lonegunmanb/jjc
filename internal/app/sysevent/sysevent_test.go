@@ -13,7 +13,7 @@ func TestFileSinkOpenSuccessWritesFileMode0600(t *testing.T) {
 	s := NewFileSink(WithLogFile(path))
 	t.Cleanup(func() {
 		if err := s.Close(); err != nil {
-			t.Fatalf("close log file: %v", err)
+			t.Errorf("close log file: %v", err)
 		}
 	})
 
