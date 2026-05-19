@@ -31,6 +31,28 @@ func payload(t *testing.T, m map[string]any) []byte {
 	return b
 }
 
+type eventCaptor struct {
+	mu     sync.Mutex
+	events []sysevent.Event
+}
+
+func (c *eventCaptor) Emit(e sysevent.Event) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, e)
+}
+
+func (c *eventCaptor) has(token string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, e := range c.events {
+		if e.Token == token {
+			return true
+		}
+	}
+	return false
+}
+
 // newStubbedRunner returns a CopilotRunner whose dispatcher uses the given
 // SessionFactory. It is the standard test rig for end-to-end HTTP tests
 // that don't want to spin up a real Copilot CLI process.
@@ -128,6 +150,10 @@ func TestPostValidSignatureDispatchesEvent(t *testing.T) {
 
 func TestPostReturns202EvenWhenSessionCreationFails(t *testing.T) {
 	cfg := Config{ListenAddr: ":0", TrelloSecret: "secret", CallbackURL: "https://example.com/trello", CopilotModel: "stub"}
+	sink := &eventCaptor{}
+	oldSink := sysevent.Default()
+	sysevent.Set(sink)
+	defer sysevent.Set(oldSink)
 	factory := newFakeFactory()
 	factory.createErr = errExec
 	runner := newStubbedRunner(t, factory)
@@ -152,10 +178,8 @@ func TestPostReturns202EvenWhenSessionCreationFails(t *testing.T) {
 		t.Fatalf("expected 202 (errors are async-logged, not HTTP), got %d", rr.Code)
 	}
 	waitFor(t, time.Second, func() bool {
-		factory.mu.Lock()
-		defer factory.mu.Unlock()
-		return factory.attempts == 1
-	}, "failing session creation attempt")
+		return sink.has("worker_session_create_error")
+	}, "worker session create error log")
 }
 
 func TestMethodNotAllowed(t *testing.T) {

@@ -253,13 +253,13 @@ func (r *CopilotRunner) stopLocked() error {
 	if r.client == nil {
 		return nil
 	}
-	sysevent.Emitf(r.logger, "copilot_client_stopping", "")
+	sysevent.Emit(r.logger, "copilot_client_stopping")
 	err := r.client.Stop()
 	r.client = nil
 	if err != nil {
 		sysevent.Emitf(r.logger, "copilot_client_stop_error", "err=%v", err)
 	} else {
-		sysevent.Emitf(r.logger, "copilot_client_stopped", "")
+		sysevent.Emit(r.logger, "copilot_client_stopped")
 	}
 	return err
 }
