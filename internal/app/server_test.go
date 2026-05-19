@@ -154,7 +154,7 @@ func TestPostReturns202EvenWhenSessionCreationFails(t *testing.T) {
 	waitFor(t, time.Second, func() bool {
 		factory.mu.Lock()
 		defer factory.mu.Unlock()
-		return len(factory.createOrder) == 1
+		return factory.attempts == 1
 	}, "failing session creation attempt")
 }
 

@@ -63,6 +63,7 @@ type fakeFactory struct {
 	mu          sync.Mutex
 	sessions    map[string]*fakeSession
 	createOrder []string
+	attempts    int
 	createErr   error
 }
 
@@ -73,12 +74,13 @@ func newFakeFactory() *fakeFactory {
 func (f *fakeFactory) NewWorkerSession(_ context.Context, cardID string, _ *ActivityTracker) (WorkerSession, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.createOrder = append(f.createOrder, cardID)
+	f.attempts++
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
 	s := &fakeSession{cardID: cardID, delay: f.delay}
 	f.sessions[cardID] = s
+	f.createOrder = append(f.createOrder, cardID)
 	return s, nil
 }
 
