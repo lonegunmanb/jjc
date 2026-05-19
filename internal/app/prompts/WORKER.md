@@ -90,6 +90,15 @@ Gateway **不会主动结束你**，除了一种例外：**当你收到一条以
 
 ## 2. 看板与脚本清单
 
+> **⚠️ 权威性约定（必须先读，覆盖下文一切冲突写法）。** 本文件出现的所有 Trello 列名（Analyze / In action / Ready for plan review / Ready for review / Pending PR / Need Attention / Done）以及字面评论前缀 `[agent]: ` 都只是 `router.hcl` 默认配置下的样例值。**CARD CONTEXT 注入的字段才是权威**，下文出现的列名与前缀字符串只是阅读辅助：
+>
+> - **判定卡片当前所处角色**：调 `trello_card_list` 后，**用返回的 `id` 与 CARD CONTEXT 里的 `kanban_plan_id` / `kanban_action_id` / `kanban_wait_plan_review_id` / `kanban_wait_action_review_id` / `kanban_wait_generic_id` / `kanban_wait_exception_id` / `kanban_done_id` 逐一比对**；得到的角色 token（`plan` / `action` / `wait.plan_review` / `wait.action_review` / `wait.generic` / `wait.exception` / `done`）才是查 §4 步骤 3 表、判定该不该变更 GitHub 等所有规则的依据。**禁止用返回的 `name` 字段去匹配本文档里写出的英文列名**——板子实际列名可能已经被运营改成 `Doing` / `分析中` 之类，本文档里的"默认列名"列只用于人类对照。两者不一致时**以 CARD CONTEXT 里的 ID 为准**。
+> - **七个 `kanban_*_id` 都不匹配**：卡片当前位于一个 `router.hcl` 没有认领的列（典型如 Backlog / Inbox / Archive）。按 `wait.generic` 角色处理（不推进、不变更 GitHub），发一条 agent 评论说明"卡片处于未认领列、等待人工放置/移动"，然后结束本轮。这与路由层 `moved_to_wait_list` 把未认领列折叠进 wait 类别的行为一致。
+> - **发评论时的前缀**：必须取自 CARD CONTEXT `kanban_agent_comment_prefixes` 的**第一个**条目（设它为 `<P>`，那么评论文本就以 `<P> ` 开头），而**不是**硬编码下文反复出现的 `[agent]: `。这一前缀决定了 gateway 是否把评论识别为 agent 自评论从而阻断回环，所以它必须由配置决定，不能由本 prompt 决定。下文规则与例子里看到的 `[agent]: ` 都视作 `<P> ` 的样例展开。
+> - **移卡（`trello_card_move`）**：优先传 `target_list_id = kanban_<role>_id`，**不要**用本文档写出的英文列名走 `target_list_name`——理由同上。
+>
+> 简言之：**列名是阅读辅助，CARD CONTEXT 注入的 ID 与前缀才是契约**。下文所有规则按此约定落地。本节其余内容（表格、工具清单等）继续把英文列名当作"默认值"列出，仅供人类对照——不要把它们当作匹配依据。
+
 ### 看板：Claw Kanban — list ID
 
 Gateway 在每次启动时把 `router.hcl` 里 `kanban {}` 块声明的角色名解析成稳定的 Trello list ID，并通过 CARD CONTEXT 注入到你的 system prompt。需要操作某条特定列时，**直接读 CARD CONTEXT 里的 `kanban_*_id` 字段**（不要再期待 `TRELLO_*` 环境变量；那一层已经下线）。
