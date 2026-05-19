@@ -266,7 +266,7 @@ func main() {
 			<-ctx.Done()
 			p.Quit()
 		}()
-		sysevent.Emitf(logger, "tui_starting", "")
+		sysevent.Emit(logger, "tui_starting")
 		if _, err := p.Run(); err != nil {
 			sysevent.Emitf(logger, "tui_error", "err=%v", err)
 		}
@@ -281,14 +281,14 @@ func main() {
 		<-ctx.Done()
 	}
 
-	sysevent.Emitf(logger, "shutdown_signal", "")
+	sysevent.Emit(logger, "shutdown_signal")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		sysevent.Emitf(logger, "http_shutdown_error", "err=%v", err)
 	}
-	sysevent.Emitf(logger, "http_stopped", "")
+	sysevent.Emit(logger, "http_stopped")
 }
 
 func emitAndExit(s sysevent.Sink, token, format string, args ...any) {

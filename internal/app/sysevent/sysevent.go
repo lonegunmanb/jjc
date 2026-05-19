@@ -48,6 +48,14 @@ func Set(s Sink) {
 	globalMu.Unlock()
 }
 
+// Emit emits token without additional fields or suffix text.
+func Emit(s Sink, token string) {
+	if s == nil {
+		s = Default()
+	}
+	s.Emit(Event{Token: token})
+}
+
 // Emitf emits token with a printf-formatted suffix. An empty token writes the
 // suffix as-is, for the few legacy operator log lines that are not event=...
 // structured.
