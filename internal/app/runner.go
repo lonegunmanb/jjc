@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"github.com/lonegunmanb/jjc/internal/app/prompts"
 	"github.com/lonegunmanb/jjc/internal/app/prompttmpl"
 	"github.com/lonegunmanb/jjc/internal/app/router"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"github.com/lonegunmanb/jjc/internal/app/trelloclient"
 )
 
@@ -33,7 +33,7 @@ const DefaultCopilotModel = "claude-opus-4.6-1m"
 // construction.
 type CopilotRunner struct {
 	model      string
-	logger     *log.Logger
+	logger     sysevent.Sink
 	tmpDir     string
 	dispatcher *Dispatcher
 
@@ -100,12 +100,12 @@ type CopilotRunner struct {
 
 // NewCopilotRunner builds a runner targeting the given Copilot model. Pass
 // an empty string to use DefaultCopilotModel.
-func NewCopilotRunner(model string, logger *log.Logger) *CopilotRunner {
+func NewCopilotRunner(model string, logger sysevent.Sink) *CopilotRunner {
 	if model == "" {
 		model = DefaultCopilotModel
 	}
 	if logger == nil {
-		logger = log.Default()
+		logger = sysevent.Default()
 	}
 	r := &CopilotRunner{
 		model:       model,
@@ -223,15 +223,15 @@ func (r *CopilotRunner) Start(ctx context.Context) error {
 	if r.client != nil {
 		return nil
 	}
-	r.logger.Printf("event=copilot_client_starting model=%s", r.model)
+	sysevent.Emitf(r.logger, "copilot_client_starting", "model=%s", r.model)
 	c := copilot.NewClient(&copilot.ClientOptions{LogLevel: "error"})
 	started := time.Now()
 	if err := c.Start(ctx); err != nil {
-		r.logger.Printf("event=copilot_client_start_error err=%v", err)
+		sysevent.Emitf(r.logger, "copilot_client_start_error", "err=%v", err)
 		return fmt.Errorf("start copilot client: %w", err)
 	}
 	r.client = c
-	r.logger.Printf("event=copilot_client_started model=%s duration=%s", r.model, time.Since(started))
+	sysevent.Emitf(r.logger, "copilot_client_started", "model=%s duration=%s", r.model, time.Since(started))
 	return nil
 }
 
@@ -253,13 +253,13 @@ func (r *CopilotRunner) stopLocked() error {
 	if r.client == nil {
 		return nil
 	}
-	r.logger.Printf("event=copilot_client_stopping")
+	sysevent.Emitf(r.logger, "copilot_client_stopping", "")
 	err := r.client.Stop()
 	r.client = nil
 	if err != nil {
-		r.logger.Printf("event=copilot_client_stop_error err=%v", err)
+		sysevent.Emitf(r.logger, "copilot_client_stop_error", "err=%v", err)
 	} else {
-		r.logger.Printf("event=copilot_client_stopped")
+		sysevent.Emitf(r.logger, "copilot_client_stopped", "")
 	}
 	return err
 }
@@ -273,34 +273,34 @@ func (r *CopilotRunner) stopLocked() error {
 func (r *CopilotRunner) Handle(ctx context.Context, eventID string, rawBody []byte) (string, error) {
 	if actionID, ok := nestedString(parseRawBody(rawBody), "action", "id"); ok {
 		if r.markActionSeen(actionID) {
-			r.logger.Printf("event=duplicate_action_dropped event_id=%s action_id=%s", eventID, actionID)
+			sysevent.Emitf(r.logger, "duplicate_action_dropped", "event_id=%s action_id=%s", eventID, actionID)
 			return "", nil
 		}
 	}
 
 	slim, err := slimRawBody(rawBody)
 	if err != nil {
-		r.logger.Printf("event=prompt_slim_error event_id=%s err=%v", eventID, err)
+		sysevent.Emitf(r.logger, "prompt_slim_error", "event_id=%s err=%v", eventID, err)
 		return "", err
 	}
-	r.logger.Printf("event=prompt_slim_done event_id=%s slim_bytes=%d", eventID, len(slim))
+	sysevent.Emitf(r.logger, "prompt_slim_done", "event_id=%s slim_bytes=%d", eventID, len(slim))
 
 	// Always write an audit copy of what the worker would see for a normal
 	// dispatch. The dispatcher may end up routing this as a departure or
 	// terminate notice (different prompt wording); the audit copy here is
 	// a quick reference for "what was the underlying TASK content".
 	taskPrompt := assembleEventPrompt(rawBody, slim)
-	r.logger.Printf("event=prompt_assembled event_id=%s task_bytes=%d", eventID, len(taskPrompt))
+	sysevent.Emitf(r.logger, "prompt_assembled", "event_id=%s task_bytes=%d", eventID, len(taskPrompt))
 	promptPath, err := r.writeAuditCopy(eventID, taskPrompt)
 	if err != nil {
-		r.logger.Printf("event=prompt_audit_error event_id=%s err=%v", eventID, err)
+		sysevent.Emitf(r.logger, "prompt_audit_error", "event_id=%s err=%v", eventID, err)
 		promptPath = ""
 	} else {
-		r.logger.Printf("event=prompt_audit_written event_id=%s file=%s bytes=%d", eventID, promptPath, len(taskPrompt))
+		sysevent.Emitf(r.logger, "prompt_audit_written", "event_id=%s file=%s bytes=%d", eventID, promptPath, len(taskPrompt))
 	}
 
 	if err := r.dispatcher.Dispatch(ctx, eventID, rawBody); err != nil {
-		r.logger.Printf("event=dispatch_error event_id=%s err=%v", eventID, err)
+		sysevent.Emitf(r.logger, "dispatch_error", "event_id=%s err=%v", eventID, err)
 		return promptPath, fmt.Errorf("dispatch: %w", err)
 	}
 	return promptPath, nil
@@ -355,7 +355,7 @@ func (r *CopilotRunner) ensureAuditDir() (string, error) {
 		return "", fmt.Errorf("create audit dir: %w", err)
 	}
 	r.auditDir = dir
-	r.logger.Printf("event=audit_dir_created path=%s", dir)
+	sysevent.Emitf(r.logger, "audit_dir_created", "path=%s", dir)
 	return dir, nil
 }
 
@@ -371,10 +371,10 @@ func (r *CopilotRunner) removeAuditDir() {
 		return
 	}
 	if err := os.RemoveAll(dir); err != nil {
-		r.logger.Printf("event=audit_dir_cleanup_failed path=%s err=%v", dir, err)
+		sysevent.Emitf(r.logger, "audit_dir_cleanup_failed", "path=%s err=%v", dir, err)
 		return
 	}
-	r.logger.Printf("event=audit_dir_cleaned path=%s", dir)
+	sysevent.Emitf(r.logger, "audit_dir_cleaned", "path=%s", dir)
 }
 
 // NewWorkerSession implements SessionFactory: it creates a brand-new
@@ -394,7 +394,7 @@ func (r *CopilotRunner) NewWorkerSession(ctx context.Context, cardID string, tra
 		tracker.SetClassification(bs.classification)
 	}
 	systemPrompt := assembleWorkerSystemPrompt(cardID, bs, r.playbooks, r.kanbanView)
-	r.logger.Printf("event=worker_session_create_attempt card_id=%s model=%s system_bytes=%d",
+	sysevent.Emitf(r.logger, "worker_session_create_attempt", "card_id=%s model=%s system_bytes=%d",
 		cardID, r.model, len(systemPrompt))
 
 	// Anchor every tool call (view/grep/glob/exec relative paths) to the
@@ -434,11 +434,11 @@ func (r *CopilotRunner) NewWorkerSession(ctx context.Context, cardID string, tra
 	start := time.Now()
 	session, err := client.CreateSession(ctx, cfg)
 	if err != nil {
-		r.logger.Printf("event=worker_session_create_failed card_id=%s err=%v", cardID, err)
+		sysevent.Emitf(r.logger, "worker_session_create_failed", "card_id=%s err=%v", cardID, err)
 		return nil, fmt.Errorf("create worker session for card %s: %w", cardID, err)
 	}
-	r.logger.Printf("event=worker_session_workdir_set card_id=%s work_dir=%s", cardID, workDir)
-	r.logger.Printf("event=worker_session_created_ok card_id=%s create_duration=%s",
+	sysevent.Emitf(r.logger, "worker_session_workdir_set", "card_id=%s work_dir=%s", cardID, workDir)
+	sysevent.Emitf(r.logger, "worker_session_created_ok", "card_id=%s create_duration=%s",
 		cardID, time.Since(start))
 
 	return &copilotWorkerSession{session: session, logger: r.logger, cardID: cardID, tracker: tracker}, nil
@@ -495,7 +495,7 @@ func parseRawBody(rawBody []byte) map[string]any {
 func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) workerBootstrap {
 	bs := workerBootstrap{cardID: cardID, routerDir: r.routerDir}
 	if r.cardSignalsFetcher == nil && r.cardInfoFetcher == nil {
-		r.logger.Printf("event=worker_bootstrap_skip card_id=%s reason=no_fetcher", cardID)
+		sysevent.Emitf(r.logger, "worker_bootstrap_skip", "card_id=%s reason=no_fetcher", cardID)
 		return bs
 	}
 	// Bound the rule-input fetch so a hung Trello API can't stall
@@ -507,7 +507,7 @@ func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) wo
 		var err error
 		signals, err = r.cardSignalsFetcher(fetchCtx, cardID)
 		if err != nil {
-			r.logger.Printf("event=worker_bootstrap_fetch_failed card_id=%s err=%v", cardID, err)
+			sysevent.Emitf(r.logger, "worker_bootstrap_fetch_failed", "card_id=%s err=%v", cardID, err)
 			return bs
 		}
 		if signals.ID == "" {
@@ -516,7 +516,7 @@ func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) wo
 	} else {
 		firstLine, err := r.cardInfoFetcher(fetchCtx, cardID)
 		if err != nil {
-			r.logger.Printf("event=worker_bootstrap_fetch_failed card_id=%s err=%v", cardID, err)
+			sysevent.Emitf(r.logger, "worker_bootstrap_fetch_failed", "card_id=%s err=%v", cardID, err)
 			return bs
 		}
 		signals.FirstLine = firstLine
@@ -528,11 +528,11 @@ func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) wo
 		// Help operators figure out why we couldn't extract a GitHub
 		// owner/repo/number — usually because the script returned an
 		// unexpected JSON shape or the card body has no GitHub URL.
-		r.logger.Printf("event=worker_bootstrap_no_github_url card_id=%s text_preview=%q",
+		sysevent.Emitf(r.logger, "worker_bootstrap_no_github_url", "card_id=%s text_preview=%q",
 			cardID, preview(signals.FirstLine, 400))
 	}
 	if r.ruleEngine == nil {
-		r.logger.Printf("event=worker_bootstrap_no_rule_engine card_id=%s", cardID)
+		sysevent.Emitf(r.logger, "worker_bootstrap_no_rule_engine", "card_id=%s", cardID)
 		return bs
 	}
 	match, ok := r.ruleEngine.Match(signals)
@@ -542,11 +542,11 @@ func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) wo
 	bs.classification.RuleName = match.RuleName
 	bs.ruleName = match.RuleName
 	bs.promptNames = append([]string(nil), match.PromptNames...)
-	r.logger.Printf("event=worker_bootstrap_rule_matched card_id=%s rule=%s prompt_count=%d kind=%s owner=%s repo=%s number=%s text_bytes=%d",
+	sysevent.Emitf(r.logger, "worker_bootstrap_rule_matched", "card_id=%s rule=%s prompt_count=%d kind=%s owner=%s repo=%s number=%s text_bytes=%d",
 		cardID, match.RuleName, len(match.PromptNames), bs.classification.GitHub.ItemKind,
 		bs.classification.GitHub.Owner, bs.classification.GitHub.Repo, bs.classification.GitHub.Number, len(signals.FirstLine))
 	if len(match.PromptNames) == 0 {
-		r.logger.Printf("event=worker_bootstrap_no_playbook card_id=%s rule=%s", cardID, match.RuleName)
+		sysevent.Emitf(r.logger, "worker_bootstrap_no_playbook", "card_id=%s rule=%s", cardID, match.RuleName)
 		return bs
 	}
 
@@ -560,36 +560,36 @@ func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) wo
 			if path, ok := r.playbooks.Path(playbook); ok {
 				content, rerr := r.playbooks.Read(playbook)
 				if rerr != nil {
-					r.logger.Printf("event=worker_bootstrap_playbook_read_failed card_id=%s path=%s err=%v",
+					sysevent.Emitf(r.logger, "worker_bootstrap_playbook_read_failed", "card_id=%s path=%s err=%v",
 						cardID, path, rerr)
 					continue
 				}
 				bs.playbooks = append(bs.playbooks, workerPlaybook{Name: playbook, Path: path, Content: content})
-				r.logger.Printf("event=worker_bootstrap_playbook_ready card_id=%s rule=%s playbook=%s playbook_bytes=%d source=playbooks_tempdir",
+				sysevent.Emitf(r.logger, "worker_bootstrap_playbook_ready", "card_id=%s rule=%s playbook=%s playbook_bytes=%d source=playbooks_tempdir",
 					cardID, match.RuleName, playbook, len(content))
 				continue
 			}
 		}
 		if r.routerDir == "" {
-			r.logger.Printf("event=worker_bootstrap_playbook_read_failed card_id=%s playbook=%s err=%v",
+			sysevent.Emitf(r.logger, "worker_bootstrap_playbook_read_failed", "card_id=%s playbook=%s err=%v",
 				cardID, playbook, "router dir is empty")
 			continue
 		}
 		playbookPath := filepath.Join(r.routerDir, playbook)
 		content, rerr := os.ReadFile(playbookPath)
 		if rerr != nil {
-			r.logger.Printf("event=worker_bootstrap_playbook_read_failed card_id=%s path=%s err=%v",
+			sysevent.Emitf(r.logger, "worker_bootstrap_playbook_read_failed", "card_id=%s path=%s err=%v",
 				cardID, playbookPath, rerr)
 			continue
 		}
 		bs.playbooks = append(bs.playbooks, workerPlaybook{Name: playbook, Path: playbookPath, Content: string(content)})
-		r.logger.Printf("event=worker_bootstrap_playbook_ready card_id=%s rule=%s playbook=%s playbook_bytes=%d source=router_dir",
+		sysevent.Emitf(r.logger, "worker_bootstrap_playbook_ready", "card_id=%s rule=%s playbook=%s playbook_bytes=%d source=router_dir",
 			cardID, match.RuleName, playbook, len(content))
 	}
 	if len(bs.playbooks) == 0 {
 		return bs
 	}
-	r.logger.Printf("event=worker_bootstrap_ready card_id=%s rule=%s prompt_count=%d",
+	sysevent.Emitf(r.logger, "worker_bootstrap_ready", "card_id=%s rule=%s prompt_count=%d",
 		cardID, match.RuleName, len(bs.playbooks))
 	return bs
 }

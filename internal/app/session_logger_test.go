@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	copilot "github.com/github/copilot-sdk/go"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
 func mustContain(t *testing.T, haystack, needle string) {
@@ -39,7 +40,7 @@ func TestLogSessionEventCoversCommonTypes(t *testing.T) {
 
 	for _, c := range cases {
 		buf.Reset()
-		logSessionEvent(logger, "card-abc", c.ev)
+		logSessionEvent(sysevent.FromLogger(logger), "card-abc", c.ev)
 		got := buf.String()
 		mustContain(t, got, c.want)
 		mustContain(t, got, "card=card-abc")
@@ -52,7 +53,7 @@ func TestLogSessionEventDropsNoiseTypes(t *testing.T) {
 
 	for _, ty := range []copilot.SessionEventType{"tool.execution_partial_result", "session.background_tasks_changed"} {
 		buf.Reset()
-		logSessionEvent(logger, "card-abc", copilot.SessionEvent{Type: ty})
+		logSessionEvent(sysevent.FromLogger(logger), "card-abc", copilot.SessionEvent{Type: ty})
 		if buf.Len() != 0 {
 			t.Fatalf("event type %q should be dropped, got: %s", ty, buf.String())
 		}
@@ -63,7 +64,7 @@ func TestLogSessionEventSkipsEmptyAssistantMessage(t *testing.T) {
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
 
-	logSessionEvent(logger, "card-abc", copilot.SessionEvent{
+	logSessionEvent(sysevent.FromLogger(logger), "card-abc", copilot.SessionEvent{
 		Data: &copilot.AssistantMessageData{MessageID: "m", Content: ""},
 	})
 	if buf.Len() != 0 {

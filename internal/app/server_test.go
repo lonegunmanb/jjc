@@ -7,7 +7,7 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
-	"log"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -36,16 +36,16 @@ func payload(t *testing.T, m map[string]any) []byte {
 // that don't want to spin up a real Copilot CLI process.
 func newStubbedRunner(t *testing.T, factory SessionFactory) *CopilotRunner {
 	t.Helper()
-	r := NewCopilotRunner("stub-model", log.Default())
+	r := NewCopilotRunner("stub-model", sysevent.Default())
 	r.tmpDir = t.TempDir()
-	r.dispatcher = NewDispatcher(log.Default(), factory)
+	r.dispatcher = NewDispatcher(sysevent.Default(), factory)
 	t.Cleanup(func() { r.dispatcher.Stop() })
 	return r
 }
 
 func TestHeadReturns200(t *testing.T) {
 	cfg := Config{ListenAddr: ":0", TrelloSecret: "secret", CallbackURL: "https://example.com/trello", CopilotModel: "stub"}
-	r := NewRouterWithRunner(context.Background(), cfg, newStubbedRunner(t, newFakeFactory()), log.Default())
+	r := NewRouterWithRunner(context.Background(), cfg, newStubbedRunner(t, newFakeFactory()), sysevent.Default())
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodHead, "/", nil)
@@ -58,7 +58,7 @@ func TestHeadReturns200(t *testing.T) {
 func TestPostRejectsBadSignature403(t *testing.T) {
 	cfg := Config{ListenAddr: ":0", TrelloSecret: "secret", CallbackURL: "https://example.com/trello", CopilotModel: "stub"}
 	factory := newFakeFactory()
-	r := NewRouterWithRunner(context.Background(), cfg, newStubbedRunner(t, factory), log.Default())
+	r := NewRouterWithRunner(context.Background(), cfg, newStubbedRunner(t, factory), sysevent.Default())
 
 	body := payload(t, map[string]any{"action": map[string]any{"type": "updateCard"}})
 	rr := httptest.NewRecorder()
@@ -80,7 +80,7 @@ func TestPostRejectsBadSignature403(t *testing.T) {
 func TestPostValidSignatureDispatchesEvent(t *testing.T) {
 	cfg := Config{ListenAddr: ":0", TrelloSecret: "secret", CallbackURL: "https://example.com/trello", CopilotModel: "stub"}
 	factory := newFakeFactory()
-	r := NewRouterWithRunner(context.Background(), cfg, newStubbedRunner(t, factory), log.Default())
+	r := NewRouterWithRunner(context.Background(), cfg, newStubbedRunner(t, factory), sysevent.Default())
 
 	body := payload(t, map[string]any{
 		"action": map[string]any{
@@ -131,7 +131,7 @@ func TestPostReturns202EvenWhenSessionCreationFails(t *testing.T) {
 	factory := newFakeFactory()
 	factory.createErr = errExec
 	runner := newStubbedRunner(t, factory)
-	r := NewRouterWithRunner(context.Background(), cfg, runner, log.Default())
+	r := NewRouterWithRunner(context.Background(), cfg, runner, sysevent.Default())
 
 	body := payload(t, map[string]any{
 		"action": map[string]any{
@@ -151,11 +151,16 @@ func TestPostReturns202EvenWhenSessionCreationFails(t *testing.T) {
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("expected 202 (errors are async-logged, not HTTP), got %d", rr.Code)
 	}
+	waitFor(t, time.Second, func() bool {
+		factory.mu.Lock()
+		defer factory.mu.Unlock()
+		return len(factory.createOrder) == 1
+	}, "failing session creation attempt")
 }
 
 func TestMethodNotAllowed(t *testing.T) {
 	cfg := Config{ListenAddr: ":0", TrelloSecret: "secret", CallbackURL: "https://example.com/trello", CopilotModel: "stub"}
-	r := NewRouterWithRunner(context.Background(), cfg, newStubbedRunner(t, newFakeFactory()), log.Default())
+	r := NewRouterWithRunner(context.Background(), cfg, newStubbedRunner(t, newFakeFactory()), sysevent.Default())
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -171,7 +176,7 @@ func TestMethodNotAllowed(t *testing.T) {
 // any body bytes are read into memory.
 func TestPostRejectsOversizedBodyByContentLength(t *testing.T) {
 	cfg := Config{ListenAddr: ":0", TrelloSecret: "secret", CallbackURL: "https://example.com/trello", CopilotModel: "stub"}
-	r := NewRouterWithRunner(context.Background(), cfg, newStubbedRunner(t, newFakeFactory()), log.Default())
+	r := NewRouterWithRunner(context.Background(), cfg, newStubbedRunner(t, newFakeFactory()), sysevent.Default())
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte("{}")))
@@ -189,7 +194,7 @@ func TestPostRejectsOversizedBodyByContentLength(t *testing.T) {
 // exceeds the cap still gets a 413 — MaxBytesReader catches it.
 func TestPostRejectsOversizedBodyByStreaming(t *testing.T) {
 	cfg := Config{ListenAddr: ":0", TrelloSecret: "secret", CallbackURL: "https://example.com/trello", CopilotModel: "stub"}
-	r := NewRouterWithRunner(context.Background(), cfg, newStubbedRunner(t, newFakeFactory()), log.Default())
+	r := NewRouterWithRunner(context.Background(), cfg, newStubbedRunner(t, newFakeFactory()), sysevent.Default())
 
 	body := bytes.Repeat([]byte("A"), int(MaxWebhookBodyBytes)+1024)
 	rr := httptest.NewRecorder()
@@ -212,7 +217,7 @@ func TestEventsForDifferentCardsRunInParallel(t *testing.T) {
 	factory := newFakeFactory()
 	factory.delay = 80 * time.Millisecond
 	runner := newStubbedRunner(t, factory)
-	r := NewRouterWithRunner(context.Background(), cfg, runner, log.Default())
+	r := NewRouterWithRunner(context.Background(), cfg, runner, sysevent.Default())
 
 	cards := []string{"card1", "card2", "card3", "card4"}
 	var wg sync.WaitGroup
@@ -266,7 +271,7 @@ func TestEventsForSameCardAreSerialised(t *testing.T) {
 	factory := newFakeFactory()
 	factory.delay = 30 * time.Millisecond
 	runner := newStubbedRunner(t, factory)
-	r := NewRouterWithRunner(context.Background(), cfg, runner, log.Default())
+	r := NewRouterWithRunner(context.Background(), cfg, runner, sysevent.Default())
 
 	body := payload(t, map[string]any{"action": map[string]any{
 		"type": "updateCard",
@@ -313,7 +318,7 @@ func TestDuplicateActionIDsAreDeduped(t *testing.T) {
 	cfg := Config{ListenAddr: ":0", TrelloSecret: "secret", CallbackURL: "https://example.com/trello", CopilotModel: "stub"}
 	factory := newFakeFactory()
 	runner := newStubbedRunner(t, factory)
-	r := NewRouterWithRunner(context.Background(), cfg, runner, log.Default())
+	r := NewRouterWithRunner(context.Background(), cfg, runner, sysevent.Default())
 
 	body := payload(t, map[string]any{"action": map[string]any{
 		"id":   "act-dup-1",

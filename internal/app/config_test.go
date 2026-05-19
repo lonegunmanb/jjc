@@ -31,6 +31,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "env-router")
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
+	t.Setenv("LOG_FILE", "env.log")
 
 	cfg, err := LoadConfig([]string{"cmd"})
 	if err != nil {
@@ -61,6 +62,9 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	if cfg.KanbanBoardID != "env-board" {
 		t.Fatalf("unexpected kanban board id: %s", cfg.KanbanBoardID)
 	}
+	if cfg.LogFile != "env.log" {
+		t.Fatalf("unexpected log file: %s", cfg.LogFile)
+	}
 }
 
 func TestLoadConfigFlagOverridesEnv(t *testing.T) {
@@ -75,7 +79,7 @@ func TestLoadConfigFlagOverridesEnv(t *testing.T) {
 	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
 
-	cfg, err := LoadConfig([]string{"cmd", "--listen", ":8088", "--trello-api-secret", "flag-secret", "--copilot-model", "flag-model", "--router-dir", "flag-router", "--kanban-board-id", "flag-board"})
+	cfg, err := LoadConfig([]string{"cmd", "--listen", ":8088", "--trello-api-secret", "flag-secret", "--copilot-model", "flag-model", "--router-dir", "flag-router", "--kanban-board-id", "flag-board", "--log-file", "flag.log"})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -94,6 +98,9 @@ func TestLoadConfigFlagOverridesEnv(t *testing.T) {
 	}
 	if cfg.KanbanBoardID != "flag-board" {
 		t.Fatalf("expected kanban board id from flag, got %s", cfg.KanbanBoardID)
+	}
+	if cfg.LogFile != "flag.log" {
+		t.Fatalf("expected log file from flag, got %s", cfg.LogFile)
 	}
 }
 
@@ -131,6 +138,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if cfg.RouterDir != "env-router" {
 		t.Fatalf("expected router dir from env, got %q", cfg.RouterDir)
+	}
+	if cfg.LogFile != "trellooperator.log" {
+		t.Fatalf("expected default log file trellooperator.log, got %q", cfg.LogFile)
 	}
 }
 
@@ -262,6 +272,7 @@ func TestRedactedDoesNotLeakPrefix(t *testing.T) {
 		RouterDir:      "r",
 		PlaybooksDir:   "p",
 		KanbanBoardID:  "b",
+		LogFile:        "trellooperator.log",
 	}
 	out := c.Redacted()
 	for _, secret := range []string{c.TrelloSecret, c.TrelloAPIKey, c.TrelloAPIToken} {
@@ -298,6 +309,7 @@ func TestRedactedCoversEverySensitiveField(t *testing.T) {
 		RouterDir:      "router",
 		PlaybooksDir:   "playbooks",
 		KanbanBoardID:  "board",
+		LogFile:        "trellooperator.log",
 	}
 	out := c.Redacted()
 
@@ -350,6 +362,7 @@ func TestRedactedMentionsEveryNonSensitiveField(t *testing.T) {
 		RouterDir:      "REDACTED_TEST_ROUTER",
 		PlaybooksDir:   "REDACTED_TEST_PLAYBOOKS",
 		KanbanBoardID:  "REDACTED_TEST_BOARD",
+		LogFile:        "REDACTED_TEST_LOG_FILE",
 	}
 	out := c.Redacted()
 	sensitive := []string{"secret", "token", "password", "api"}

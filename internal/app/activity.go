@@ -2,13 +2,13 @@ package app
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
 	copilot "github.com/github/copilot-sdk/go"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
 // WorkerState is a coarse "what is the worker doing right now?" enum
@@ -126,7 +126,7 @@ func NewActivityTracker(cardID string, ringSize int) *ActivityTracker {
 		fmt.Fprintf(f, "# trello-worker activity log\n# card_id: %s\n# created_at: %s\n",
 			cardID, time.Now().Format(time.RFC3339Nano))
 	} else {
-		log.Printf("event=activity_log_create_error card_id=%s err=%v", cardID, err)
+		sysevent.Emitf(sysevent.Default(), "activity_log_create_error", "card_id=%s err=%v", cardID, err)
 	}
 	return t
 }
@@ -405,7 +405,7 @@ func (t *ActivityTracker) writeLogLine(at time.Time, kind, tool, full string) {
 		line = fmt.Sprintf("%s\t%s\t\t%s\n", ts, kind, escaped)
 	}
 	if _, err := t.logFile.WriteString(line); err != nil {
-		log.Printf("event=activity_log_write_error card_id=%s err=%v", t.cardID, err)
+		sysevent.Emitf(sysevent.Default(), "activity_log_write_error", "card_id=%s err=%v", t.cardID, err)
 	}
 }
 

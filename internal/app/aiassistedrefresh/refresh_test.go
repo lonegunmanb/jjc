@@ -485,7 +485,7 @@ func TestNewDefaultsAreSane(t *testing.T) {
 		t.Error("home must default to os.UserHomeDir")
 	}
 	if s.logger == nil {
-		t.Error("logger must default to log.Default()")
+		t.Error("logger must default to sysevent.Default()")
 	}
 }
 
@@ -579,4 +579,3 @@ func TestRefreshSerialisesConcurrentCalls(t *testing.T) {
 		t.Fatalf("Refresh must serialise concurrent calls; observed maxInFlight=%d (want 1)", maxSeen)
 	}
 }
-

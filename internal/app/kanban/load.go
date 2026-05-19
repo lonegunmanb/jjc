@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
 // LoadAndResolve is the single entry point main wires at startup. It
@@ -22,9 +22,9 @@ import (
 // `event=trello_board_lists_fetch_failed`. A failure inside Resolve is
 // a *ResolveError suitable for `event=kanban_resolve_failed`.
 //
-// `logger` may be nil; the function defaults to log.Default() for the
+// `logger` may be nil; the function defaults to sysevent.Default() for the
 // unclaimed-list WARN lines.
-func LoadAndResolve(ctx context.Context, hclPath, boardID string, fetcher BoardListsFetcher, logger *log.Logger) (*Resolved, error) {
+func LoadAndResolve(ctx context.Context, hclPath, boardID string, fetcher BoardListsFetcher, logger sysevent.Sink) (*Resolved, error) {
 	if boardID == "" {
 		return nil, errors.New("kanban: board_id is empty")
 	}
@@ -32,7 +32,7 @@ func LoadAndResolve(ctx context.Context, hclPath, boardID string, fetcher BoardL
 		return nil, errors.New("kanban: fetcher is nil")
 	}
 	if logger == nil {
-		logger = log.Default()
+		logger = sysevent.Default()
 	}
 
 	cfg, err := LoadConfig(hclPath)
@@ -58,7 +58,7 @@ func LoadAndResolve(ctx context.Context, hclPath, boardID string, fetcher BoardL
 		idByName[l.Name] = l.ID
 	}
 	for _, name := range resolved.UnclaimedListNames {
-		logger.Printf("event=kanban_unclaimed_list name=%q id=%s fallback_category=wait",
+		sysevent.Emitf(logger, "kanban_unclaimed_list", "name=%q id=%s fallback_category=wait",
 			name, idByName[name])
 	}
 

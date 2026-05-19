@@ -14,6 +14,7 @@ import (
 
 	"github.com/lonegunmanb/jjc/internal/app/kanban"
 	"github.com/lonegunmanb/jjc/internal/app/prompttmpl"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
 func TestNewCopilotRunnerDefaultsModel(t *testing.T) {
@@ -66,7 +67,7 @@ func TestRunnerHandleDuplicateActionIsDropped(t *testing.T) {
 }
 
 func TestNewWorkerSessionWithoutClientReturnsError(t *testing.T) {
-	r := NewCopilotRunner("model", log.Default())
+	r := NewCopilotRunner("model", sysevent.Default())
 	if _, err := r.NewWorkerSession(context.Background(), "card", nil); err == nil {
 		t.Fatal("expected error when client is not started")
 	} else if !strings.Contains(err.Error(), "client not started") {
@@ -80,7 +81,7 @@ func TestNewWorkerSessionWithoutClientReturnsError(t *testing.T) {
 // CopilotRunner.Stop removes it (so audit-copy files do not pile up
 // under the OS temp dir for the lifetime of the host).
 func TestAuditDirCreatedAndCleanedByStop(t *testing.T) {
-	r := NewCopilotRunner("model", log.Default())
+	r := NewCopilotRunner("model", sysevent.Default())
 	r.tmpDir = t.TempDir()
 
 	p1, err := r.writeAuditCopy("evt-1", "first prompt")
@@ -113,7 +114,7 @@ func TestAuditDirCreatedAndCleanedByStop(t *testing.T) {
 // Without the copy-and-truncate fix the slice's underlying array
 // doubled forever; cap should now stabilise close to dedupMaxLen.
 func TestMarkActionSeenRingDoesNotGrowUnbounded(t *testing.T) {
-	r := NewCopilotRunner("model", log.Default())
+	r := NewCopilotRunner("model", sysevent.Default())
 	r.dedupMaxLen = 8
 
 	for i := 0; i < 1000; i++ {
@@ -200,10 +201,10 @@ func TestAssembleWorkerSystemPromptFallback(t *testing.T) {
 // `TRELLO_*` env-var bridge.
 func TestAssembleWorkerSystemPromptInjectsKanbanIDs(t *testing.T) {
 	view := &kanban.Resolved{
-		BoardID:              "B1",
-		Plan:                 kanban.Role{Name: "Analyze", ID: "L_PLAN"},
-		Action:               kanban.Role{Name: "In action", ID: "L_ACTION"},
-		Done:                 kanban.Role{Name: "Done", ID: "L_DONE"},
+		BoardID: "B1",
+		Plan:    kanban.Role{Name: "Analyze", ID: "L_PLAN"},
+		Action:  kanban.Role{Name: "In action", ID: "L_ACTION"},
+		Done:    kanban.Role{Name: "Done", ID: "L_DONE"},
 		Wait: kanban.WaitRoles{
 			PlanReview:   kanban.Role{Name: "Ready for plan review", ID: "L_RPR"},
 			ActionReview: kanban.Role{Name: "Ready for review", ID: "L_RR"},
@@ -245,7 +246,7 @@ func TestAssembleWorkerSystemPromptUsesRenderedSkeletons(t *testing.T) {
 			"TOOLS.md":     "embedded-tools",
 			"USER.md":      "embedded-user",
 		},
-		Logger: log.New(io.Discard, "", 0),
+		Logger: sysevent.FromLogger(log.New(io.Discard, "", 0)),
 	})
 	if err != nil {
 		t.Fatalf("new renderer: %v", err)
@@ -284,7 +285,7 @@ func TestAssembleEventPromptHasTaskOnly(t *testing.T) {
 
 // Sanity: when stop is called multiple times no panic occurs.
 func TestRunnerStopIsIdempotent(t *testing.T) {
-	r := NewCopilotRunner("m", log.Default())
+	r := NewCopilotRunner("m", sysevent.Default())
 	if err := r.Stop(); err != nil {
 		t.Fatalf("first stop: %v", err)
 	}

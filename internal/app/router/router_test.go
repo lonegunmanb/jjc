@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/lonegunmanb/jjc/internal/app/kanban"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
 func sampleView() *kanban.Resolved {
@@ -40,7 +41,7 @@ func newSampleEngine(t *testing.T) (*Engine, *bytes.Buffer) {
 	}
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	return NewEngine(cfg, sampleView(), logger), &buf
+	return NewEngine(cfg, sampleView(), sysevent.FromLogger(logger)), &buf
 }
 
 // TestEngineEvaluate pins the table of "input event -> decision" the
@@ -224,7 +225,7 @@ route "second" {
 	if err != nil {
 		t.Fatalf("DecodeConfig: %v", err)
 	}
-	e := NewEngine(cfg, nil, log.New(&bytes.Buffer{}, "", 0))
+	e := NewEngine(cfg, nil, sysevent.FromLogger(log.New(&bytes.Buffer{}, "", 0)))
 	got := e.Evaluate(Event{CardID: "c1"})
 	if got.Route != "first" || got.Reason != "first_match" {
 		t.Errorf("first-match-wins broken: got %+v", got)
@@ -253,7 +254,7 @@ route "good" {
 		t.Fatalf("DecodeConfig: %v", err)
 	}
 	var buf bytes.Buffer
-	e := NewEngine(cfg, nil, log.New(&buf, "", 0))
+	e := NewEngine(cfg, nil, sysevent.FromLogger(log.New(&buf, "", 0)))
 	got := e.Evaluate(Event{Type: "updateCard", CardID: "c1"})
 	if got.Route != "good" {
 		t.Errorf("expected fallthrough to good rule, got %+v", got)
@@ -281,7 +282,7 @@ route "only_known_type" {
 		t.Fatalf("DecodeConfig: %v", err)
 	}
 	var buf bytes.Buffer
-	e := NewEngine(cfg, nil, log.New(&buf, "", 0))
+	e := NewEngine(cfg, nil, sysevent.FromLogger(log.New(&buf, "", 0)))
 	got := e.Evaluate(Event{Type: "createCard", CardID: "c42"})
 	if got.Do != ActionDrop || got.Reason != "router_no_route_matched" {
 		t.Errorf("expected synthetic drop on no-match, got %+v", got)
