@@ -125,9 +125,9 @@ func NewFileSink(opts ...FileSinkOption) *FileSink {
 
 	out := cfg.stderr
 	var closer io.Closer
-	// Mode 0o600: the log captures card ids, model output, prompt previews
-	// and timing data. Restrict to the gateway user so a shared host (or a
-	// stray operator) cannot read it without explicit privilege escalation.
+	// Mode 0o600: the log can capture card ids, model output, prompt
+	// previews and timing data. Restrict it to the process owner so a
+	// shared host user cannot read it without explicit privilege escalation.
 	if f, err := os.OpenFile(cfg.logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err != nil {
 		log.New(cfg.stderr, "", log.LstdFlags).Printf("warning: cannot open log file %q (%v); falling back to stderr", cfg.logFile, err)
 	} else {
