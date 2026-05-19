@@ -98,7 +98,7 @@ func TestEmbeddedPromptsRenderWithoutUnknownKanbanKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renderer rejected embedded prompts: %v", err)
 	}
-	defer r.Cleanup()
+	defer func() { _ = r.Cleanup() }()
 }
 
 // TestEmbeddedPromptsHaveNoUnsubstitutedKanbanRefs walks each rendered
@@ -122,7 +122,7 @@ func TestEmbeddedPromptsHaveNoUnsubstitutedKanbanRefs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renderer setup: %v", err)
 	}
-	defer r.Cleanup()
+	defer func() { _ = r.Cleanup() }()
 
 	for _, name := range r.Files() {
 		body, rerr := r.Read(name)
