@@ -201,10 +201,10 @@ func TestAssembleWorkerSystemPromptFallback(t *testing.T) {
 // `TRELLO_*` env-var bridge.
 func TestAssembleWorkerSystemPromptInjectsKanbanIDs(t *testing.T) {
 	view := &kanban.Resolved{
-		BoardID: "B1",
-		Plan:    kanban.Role{Name: "Analyze", ID: "L_PLAN"},
-		Action:  kanban.Role{Name: "In action", ID: "L_ACTION"},
-		Done:    kanban.Role{Name: "Done", ID: "L_DONE"},
+		BoardID:              "B1",
+		Plan:                 kanban.Role{Name: "Analyze", ID: "L_PLAN"},
+		Action:               kanban.Role{Name: "In action", ID: "L_ACTION"},
+		Done:                 kanban.Role{Name: "Done", ID: "L_DONE"},
 		Wait: kanban.WaitRoles{
 			PlanReview:   kanban.Role{Name: "Ready for plan review", ID: "L_RPR"},
 			ActionReview: kanban.Role{Name: "Ready for review", ID: "L_RR"},
