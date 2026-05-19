@@ -250,7 +250,7 @@ func TestAssembleWorkerSystemPromptUsesRenderedSkeletons(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new renderer: %v", err)
 	}
-	defer r.Cleanup()
+	defer func() { _ = r.Cleanup() }()
 
 	got := assembleWorkerSystemPrompt("card-y", workerBootstrap{cardID: "card-y"}, r, nil)
 	if !strings.Contains(got, "custom worker body") {
