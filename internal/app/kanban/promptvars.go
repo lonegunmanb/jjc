@@ -103,9 +103,31 @@ func (r *Resolved) PromptVars() map[string]string {
 		PromptVarWaitListIDs:   strings.Join(r.WaitListIDs, promptVarJoinSep),
 		PromptVarDoneListIDs:   strings.Join(r.DoneListIDs, promptVarJoinSep),
 
-		PromptVarAgentCommentPrefix:   firstNonEmpty(r.AgentCommentPrefixes),
+		PromptVarAgentCommentPrefix:   r.DefaultAgentCommentPrefix(),
 		PromptVarAgentCommentPrefixes: strings.Join(r.AgentCommentPrefixes, promptVarJoinSep),
 	}
+}
+
+// DefaultAgentCommentPrefix returns the prefix every worker comment
+// must start with so the gateway can recognise the comment as
+// agent-authored and break the self-comment feedback loop.
+//
+// By spec the value is the first entry of r.AgentCommentPrefixes; for
+// defence against a malformed router.hcl that accidentally declared
+// an empty string at index 0, the implementation walks forward to the
+// first non-empty entry. Returns "" when r is nil or no usable prefix
+// was configured (a state the route engine treats as "no prefix",
+// matching the existing IsAgentComment behaviour).
+//
+// This is the single source of truth for the "active" prefix on the
+// Go side. The kanban template variable kanban.agent_comment_prefix
+// resolves to the same value via PromptVars, so playbook authors and
+// Go-side callers cannot disagree about which prefix is in effect.
+func (r *Resolved) DefaultAgentCommentPrefix() string {
+	if r == nil {
+		return ""
+	}
+	return firstNonEmpty(r.AgentCommentPrefixes)
 }
 
 // firstNonEmpty returns the first non-empty entry of xs, or "" when

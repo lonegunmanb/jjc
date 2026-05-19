@@ -174,3 +174,62 @@ func keysOf(m map[string]string) []string {
 	}
 	return out
 }
+
+func TestDefaultAgentCommentPrefix_NilResolved(t *testing.T) {
+	var r *Resolved
+	if got := r.DefaultAgentCommentPrefix(); got != "" {
+		t.Errorf("nil receiver = %q, want empty", got)
+	}
+}
+
+func TestDefaultAgentCommentPrefix_FirstEntry(t *testing.T) {
+	r := sampleResolved() // []string{"[agent]:", "[claw]:"}
+	if got := r.DefaultAgentCommentPrefix(); got != "[agent]:" {
+		t.Errorf("got %q, want first entry %q", got, "[agent]:")
+	}
+}
+
+func TestDefaultAgentCommentPrefix_SkipsEmptyFirstEntry(t *testing.T) {
+	r := sampleResolved()
+	r.AgentCommentPrefixes = []string{"", "[claw]:"}
+	if got := r.DefaultAgentCommentPrefix(); got != "[claw]:" {
+		t.Errorf("got %q, want first non-empty %q", got, "[claw]:")
+	}
+}
+
+func TestDefaultAgentCommentPrefix_EmptySliceReturnsEmpty(t *testing.T) {
+	r := sampleResolved()
+	r.AgentCommentPrefixes = nil
+	if got := r.DefaultAgentCommentPrefix(); got != "" {
+		t.Errorf("got %q, want empty when no prefixes configured", got)
+	}
+}
+
+// TestDefaultAgentCommentPrefix_MatchesPromptVar is the load-bearing
+// invariant: the Go-side helper and the kanban.agent_comment_prefix
+// template variable must always agree. If they ever diverge, a
+// playbook would render one prefix while Go-side callers (e.g.
+// outgoing-comment validators) would assume another.
+func TestDefaultAgentCommentPrefix_MatchesPromptVar(t *testing.T) {
+	cases := []struct {
+		name     string
+		prefixes []string
+	}{
+		{"single", []string{"[agent]:"}},
+		{"two", []string{"[agent]:", "[claw]:"}},
+		{"empty-first", []string{"", "[claw]:"}},
+		{"empty-slice", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := sampleResolved()
+			r.AgentCommentPrefixes = tc.prefixes
+			got := r.DefaultAgentCommentPrefix()
+			fromVars := r.PromptVars()[PromptVarAgentCommentPrefix]
+			if got != fromVars {
+				t.Errorf("Go helper = %q, PromptVars[%s] = %q (must agree)",
+					got, PromptVarAgentCommentPrefix, fromVars)
+			}
+		})
+	}
+}
