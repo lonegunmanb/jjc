@@ -34,9 +34,10 @@ import (
 // playbook copies. Construct one via New, query it via Path / Read /
 // Files, and call Cleanup at process exit.
 type Renderer struct {
-	dir    string         // absolute path to the temp directory
-	files  map[string]string // basename -> absolute path inside dir
-	logger *log.Logger
+	dir        string            // absolute path to the temp directory
+	files      map[string]string // basename -> absolute path inside dir
+	kanbanVars map[string]string // accept-list for `{{kanban.*}}` references (nil means "none allowed")
+	logger     *log.Logger
 }
 
 // Options configures how a Renderer is built.
@@ -51,6 +52,24 @@ type Options struct {
 	// to the temp dir before PlaybooksDir is overlaid, so a user file of
 	// the same basename wins.
 	EmbeddedDefaults map[string]string
+
+	// KanbanVars is the substitution table the renderer uses for any
+	// `{{...}}` reference whose trimmed body starts with `kanban.`.
+	// The keys are the well-known template variables declared in
+	// docs/playbook-template-variables.md §2 (and exported as
+	// constants from internal/app/kanban for compile-time safety).
+	//
+	// The renderer is strict: any `{{kanban.<name>}}` reference whose
+	// `<name>` is not present in this map causes startup to fail with
+	// `event=playbook_render_failed reason=unknown_kanban_key` and a
+	// non-zero exit. There is no fallback, by design — a typo such as
+	// `{{kanban.plan.di}}` must surface at boot, not at the first
+	// worker turn.
+	//
+	// Optional: when nil or empty, any `{{kanban.*}}` reference is
+	// treated as an unknown key. A playbook that does not use the
+	// kanban namespace at all is unaffected.
+	KanbanVars map[string]string
 
 	// Logger receives structured event lines (one per significant
 	// step). Optional; defaults to log.Default().
@@ -89,9 +108,10 @@ func New(opts Options) (*Renderer, error) {
 	logger.Printf("event=playbooks_tempdir_created path=%s source=%s", tempDir, opts.PlaybooksDir)
 
 	r := &Renderer{
-		dir:    tempDir,
-		files:  map[string]string{},
-		logger: logger,
+		dir:        tempDir,
+		files:      map[string]string{},
+		kanbanVars: opts.KanbanVars,
+		logger:     logger,
 	}
 
 	cleanupOnError := func() {
@@ -167,7 +187,8 @@ func New(opts Options) (*Renderer, error) {
 		r.files[name] = dst
 	}
 
-	// 3. Render every file in temp dir: substitute `{{basename}}` -> abs path.
+	// 3. Render every file in temp dir: substitute `{{basename}}` -> abs path,
+	//    and `{{kanban.*}}` -> the corresponding entry from r.kanbanVars.
 	for name, path := range r.files {
 		if err := r.renderFile(name, path); err != nil {
 			cleanupOnError()
@@ -175,7 +196,8 @@ func New(opts Options) (*Renderer, error) {
 		}
 	}
 
-	logger.Printf("event=playbooks_rendered count=%d dir=%s", len(r.files), tempDir)
+	logger.Printf("event=playbooks_rendered count=%d dir=%s kanban_vars=%d",
+		len(r.files), tempDir, len(r.kanbanVars))
 	return r, nil
 }
 
@@ -238,17 +260,18 @@ func (r *Renderer) Cleanup() error {
 const MaxRenderedFileBytes int64 = 4 << 20
 
 // renderFile reads the file at path, substitutes every `{{<basename>}}`
-// occurrence with the absolute path of <basename> in r.dir, and writes
-// the result back. Any reference whose target is missing or whose name
-// is invalid (contains `/`, `\`, `..`, or is empty) causes an error
-// carrying the source file, 1-based line/column, and the offending
-// reference.
+// occurrence with the absolute path of <basename> in r.dir and every
+// `{{kanban.*}}` occurrence with the corresponding entry from
+// r.kanbanVars, and writes the result back. Any reference whose target
+// is missing or whose name is invalid (contains `/`, `\`, `..`, or is
+// empty) causes an error carrying the source file, 1-based line/column,
+// and the offending reference.
 func (r *Renderer) renderFile(name, path string) error {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("prompttmpl: read %q: %w", path, err)
 	}
-	rendered, rerr := renderBytes(src, name, r.files)
+	rendered, rerr := renderBytes(src, name, r.files, r.kanbanVars)
 	if rerr != nil {
 		r.logger.Printf("event=playbook_render_failed file=%s line=%d column=%d reference=%q reason=%s",
 			name, rerr.Line, rerr.Column, rerr.Reference, rerr.Reason)
@@ -282,9 +305,23 @@ func (e *RenderError) Error() string {
 		e.Reason, e.File, e.Line, e.Column, e.Reference, e.Detail)
 }
 
+// kanbanRefPrefix is the namespace under which template variables
+// drawn from the resolved `kanban {}` view are exposed. Mirrors
+// kanban.PromptVarPrefix; duplicated here as a literal to keep this
+// package's dependency surface minimal (the renderer takes a plain
+// map and does not import the kanban package).
+const kanbanRefPrefix = "kanban."
+
 // renderBytes performs the substitution pass on src and returns the
 // rewritten bytes. Exposed (lower-case) for unit testing.
-func renderBytes(src []byte, file string, files map[string]string) ([]byte, *RenderError) {
+//
+// References are dispatched by the trimmed body inside `{{...}}`:
+//   - body starts with "kanban."  → looked up in kanbanVars; unknown
+//     keys produce a RenderError with reason `unknown_kanban_key`
+//   - otherwise                   → validated as a basename and looked
+//     up in files; unknown names produce a RenderError with reason
+//     `referenced_file_not_found`
+func renderBytes(src []byte, file string, files map[string]string, kanbanVars map[string]string) ([]byte, *RenderError) {
 	var out strings.Builder
 	out.Grow(len(src))
 
@@ -316,28 +353,53 @@ func renderBytes(src []byte, file string, files map[string]string) ([]byte, *Ren
 			}
 			rawRef := string(src[refStart:refEnd])
 			refName := strings.TrimSpace(rawRef)
-			if err := validateBasename(refName); err != nil {
-				return nil, &RenderError{
-					File:      file,
-					Line:      line,
-					Column:    col,
-					Reference: rawRef,
-					Reason:    "invalid_reference_name",
-					Detail:    err.Error(),
+
+			var replacement string
+			switch {
+			case strings.HasPrefix(refName, kanbanRefPrefix):
+				// Kanban template variable. Strict-mode lookup against
+				// the operator-supplied map; an unknown key is a
+				// startup-time fatal error per
+				// docs/playbook-template-variables.md §3.2.
+				val, ok := kanbanVars[refName]
+				if !ok {
+					return nil, &RenderError{
+						File:      file,
+						Line:      line,
+						Column:    col,
+						Reference: rawRef,
+						Reason:    "unknown_kanban_key",
+						Detail:    fmt.Sprintf("no kanban template variable named %q is defined", refName),
+					}
 				}
-			}
-			abs, ok := files[refName]
-			if !ok {
-				return nil, &RenderError{
-					File:      file,
-					Line:      line,
-					Column:    col,
-					Reference: rawRef,
-					Reason:    "referenced_file_not_found",
-					Detail:    fmt.Sprintf("no playbook named %q has been rendered", refName),
+				replacement = val
+			default:
+				// Cross-playbook basename reference.
+				if err := validateBasename(refName); err != nil {
+					return nil, &RenderError{
+						File:      file,
+						Line:      line,
+						Column:    col,
+						Reference: rawRef,
+						Reason:    "invalid_reference_name",
+						Detail:    err.Error(),
+					}
 				}
+				abs, ok := files[refName]
+				if !ok {
+					return nil, &RenderError{
+						File:      file,
+						Line:      line,
+						Column:    col,
+						Reference: rawRef,
+						Reason:    "referenced_file_not_found",
+						Detail:    fmt.Sprintf("no playbook named %q has been rendered", refName),
+					}
+				}
+				replacement = abs
 			}
-			out.WriteString(abs)
+
+			out.WriteString(replacement)
 			// Advance i past the closing `}}` and update line/col by
 			// scanning the consumed slice for newlines.
 			consumed := src[i : refEnd+2]

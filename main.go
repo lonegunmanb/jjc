@@ -76,27 +76,6 @@ func main() {
 	logger.Printf("event=gateway_starting %s log_file=%q", cfg.Redacted(), logFileName)
 	fmt.Fprintf(os.Stdout, "trello-gateway: logging to %s\n", logFileName)
 
-	// Pre-render every playbook .md file in cfg.PlaybooksDir into a
-	// per-process temp directory; substitute every `{{<basename>}}`
-	// reference inside those files with the absolute path of that
-	// playbook in the same temp directory. Skeleton prompts shipped with
-	// the binary (BOOTSTRAP / IDENTITY / WORKER / TOOLS / USER) are
-	// written first, so any user file with the same basename overrides
-	// the embedded copy.
-	renderer, err := prompttmpl.New(prompttmpl.Options{
-		PlaybooksDir:     cfg.PlaybooksDir,
-		EmbeddedDefaults: prompts.Defaults(),
-		Logger:           logger,
-	})
-	if err != nil {
-		logger.Fatalf("event=playbooks_dir_invalid err=%v", err)
-	}
-	defer func() {
-		if err := renderer.Cleanup(); err != nil {
-			logger.Printf("event=playbooks_tempdir_cleanup_failed err=%v", err)
-		}
-	}()
-
 	runner := app.NewCopilotRunner(cfg.CopilotModel, logger)
 	runner.SetRouterDir(cfg.RouterDir)
 
@@ -114,11 +93,16 @@ func main() {
 	runner.SetTrelloClient(trelloClient)
 	runner.SetCardInfoFetcher(app.NewSDKCardInfoFetcher(trelloClient))
 	runner.SetCardSignalsFetcher(app.NewSDKCardSignalsFetcher(trelloClient))
-	runner.SetPlaybooks(renderer)
 
 	// Resolve the kanban {} block in router.hcl against the configured
 	// Trello board. cfg.KanbanBoardID was already validated to be
 	// non-empty by LoadConfig; the bootstrap is unconditional here.
+	//
+	// Resolution has to land before prompttmpl.New so the renderer can
+	// substitute `{{kanban.*}}` template variables (see
+	// docs/playbook-template-variables.md) into every playbook .md at
+	// startup; otherwise unknown_kanban_key errors would fire for the
+	// very first reference.
 	kanbanCtx, kanbanCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	hclPath := filepath.Join(cfg.RouterDir, "router.hcl")
 	resolved, kerr := kanban.LoadAndResolve(kanbanCtx, hclPath, cfg.KanbanBoardID,
@@ -147,6 +131,30 @@ func main() {
 		resolved.BoardID, resolved.Plan.ID, resolved.Action.ID, resolved.Done.ID,
 		len(resolved.WaitListIDs), len(resolved.UnclaimedListNames))
 	runner.SetKanbanView(resolved)
+
+	// Pre-render every playbook .md file in cfg.PlaybooksDir into a
+	// per-process temp directory; substitute every `{{<basename>}}`
+	// reference inside those files with the absolute path of that
+	// playbook in the same temp directory, and every `{{kanban.*}}`
+	// reference with the corresponding value drawn from the resolved
+	// kanban view. Skeleton prompts shipped with the binary (BOOTSTRAP
+	// / IDENTITY / WORKER / TOOLS / USER) are written first, so any
+	// user file with the same basename overrides the embedded copy.
+	renderer, err := prompttmpl.New(prompttmpl.Options{
+		PlaybooksDir:     cfg.PlaybooksDir,
+		EmbeddedDefaults: prompts.Defaults(),
+		KanbanVars:       resolved.PromptVars(),
+		Logger:           logger,
+	})
+	if err != nil {
+		logger.Fatalf("event=playbooks_dir_invalid err=%v", err)
+	}
+	defer func() {
+		if err := renderer.Cleanup(); err != nil {
+			logger.Printf("event=playbooks_tempdir_cleanup_failed err=%v", err)
+		}
+	}()
+	runner.SetPlaybooks(renderer)
 
 	ruleCfg, ruleErr := router.LoadRuleConfig(hclPath, cfg.PlaybooksDir)
 	if ruleErr != nil {
