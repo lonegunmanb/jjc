@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lonegunmanb/trello-copilot/internal/app/router"
-	"github.com/lonegunmanb/trello-copilot/internal/app/trelloclient"
+	"github.com/lonegunmanb/jjc/internal/app/router"
+	"github.com/lonegunmanb/jjc/internal/app/trelloclient"
 )
 
 // CardInfoFetcher returns text from a Trello card that fallback GitHub parsing

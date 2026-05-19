@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lonegunmanb/trello-copilot/internal/app/kanban"
-	"github.com/lonegunmanb/trello-copilot/internal/app/prompttmpl"
+	"github.com/lonegunmanb/jjc/internal/app/kanban"
+	"github.com/lonegunmanb/jjc/internal/app/prompttmpl"
 )
 
 func TestEmbeddedFilesNonEmpty(t *testing.T) {

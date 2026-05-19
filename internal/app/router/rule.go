@@ -15,7 +15,7 @@ import (
 	"github.com/zclconf/go-cty/cty"
 	"github.com/zclconf/go-cty/cty/function"
 
-	"github.com/lonegunmanb/trello-copilot/internal/app/kanban"
+	"github.com/lonegunmanb/jjc/internal/app/kanban"
 )
 
 // RuleConfig is the decoded `rule {}` side of router.hcl.

@@ -1,4 +1,4 @@
-module github.com/lonegunmanb/trello-copilot
+module github.com/lonegunmanb/jjc
 
 go 1.25.4
 

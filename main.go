@@ -17,14 +17,14 @@ import (
 	"github.com/gin-gonic/gin"
 	"golang.org/x/term"
 
-	"github.com/lonegunmanb/trello-copilot/internal/app"
-	"github.com/lonegunmanb/trello-copilot/internal/app/aiassistedrefresh"
-	"github.com/lonegunmanb/trello-copilot/internal/app/kanban"
-	"github.com/lonegunmanb/trello-copilot/internal/app/prompts"
-	"github.com/lonegunmanb/trello-copilot/internal/app/prompttmpl"
-	"github.com/lonegunmanb/trello-copilot/internal/app/router"
-	"github.com/lonegunmanb/trello-copilot/internal/app/trelloclient"
-	"github.com/lonegunmanb/trello-copilot/internal/app/tunnel"
+	"github.com/lonegunmanb/jjc/internal/app"
+	"github.com/lonegunmanb/jjc/internal/app/aiassistedrefresh"
+	"github.com/lonegunmanb/jjc/internal/app/kanban"
+	"github.com/lonegunmanb/jjc/internal/app/prompts"
+	"github.com/lonegunmanb/jjc/internal/app/prompttmpl"
+	"github.com/lonegunmanb/jjc/internal/app/router"
+	"github.com/lonegunmanb/jjc/internal/app/trelloclient"
+	"github.com/lonegunmanb/jjc/internal/app/tunnel"
 )
 
 // kanbanFetcherAdapter bridges trelloclient.Client (which returns

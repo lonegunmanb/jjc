@@ -14,11 +14,11 @@ import (
 
 	copilot "github.com/github/copilot-sdk/go"
 
-	"github.com/lonegunmanb/trello-copilot/internal/app/kanban"
-	"github.com/lonegunmanb/trello-copilot/internal/app/prompts"
-	"github.com/lonegunmanb/trello-copilot/internal/app/prompttmpl"
-	"github.com/lonegunmanb/trello-copilot/internal/app/router"
-	"github.com/lonegunmanb/trello-copilot/internal/app/trelloclient"
+	"github.com/lonegunmanb/jjc/internal/app/kanban"
+	"github.com/lonegunmanb/jjc/internal/app/prompts"
+	"github.com/lonegunmanb/jjc/internal/app/prompttmpl"
+	"github.com/lonegunmanb/jjc/internal/app/router"
+	"github.com/lonegunmanb/jjc/internal/app/trelloclient"
 )
 
 // DefaultCopilotModel is the model used when none is configured.

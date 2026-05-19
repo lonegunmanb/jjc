@@ -1,6 +1,6 @@
 package app
 
-import "github.com/lonegunmanb/trello-copilot/internal/app/router"
+import "github.com/lonegunmanb/jjc/internal/app/router"
 
 // GitHubItemKind distinguishes the two GitHub URL flavours a card may point at.
 type GitHubItemKind string

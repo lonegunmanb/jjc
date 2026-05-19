@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lonegunmanb/trello-copilot/internal/app/kanban"
-	"github.com/lonegunmanb/trello-copilot/internal/app/prompttmpl"
+	"github.com/lonegunmanb/jjc/internal/app/kanban"
+	"github.com/lonegunmanb/jjc/internal/app/prompttmpl"
 )
 
 func TestNewCopilotRunnerDefaultsModel(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lonegunmanb/trello-copilot/internal/app/router"
+	"github.com/lonegunmanb/jjc/internal/app/router"
 )
 
 // fakeSession captures every prompt sent to it. Each fakeSession is bound

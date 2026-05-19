@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/lonegunmanb/trello-copilot/internal/app/trelloclient"
-	"github.com/lonegunmanb/trello-copilot/internal/app/tunnel"
+	"github.com/lonegunmanb/jjc/internal/app/trelloclient"
+	"github.com/lonegunmanb/jjc/internal/app/tunnel"
 )
 
 type switchableHandler struct {
