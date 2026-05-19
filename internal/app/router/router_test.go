@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lonegunmanb/trello-copilot/internal/app/kanban"
+	"github.com/lonegunmanb/jjc/internal/app/kanban"
 )
 
 func sampleView() *kanban.Resolved {

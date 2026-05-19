@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/lonegunmanb/trello-copilot/internal/app/tunnel"
+	"github.com/lonegunmanb/jjc/internal/app/tunnel"
 )
 
 type Config struct {

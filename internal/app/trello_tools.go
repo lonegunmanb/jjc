@@ -10,7 +10,7 @@ import (
 
 	copilot "github.com/github/copilot-sdk/go"
 
-	"github.com/lonegunmanb/trello-copilot/internal/app/trelloclient"
+	"github.com/lonegunmanb/jjc/internal/app/trelloclient"
 )
 
 // trelloToolTimeout caps every individual Trello tool call. The tool

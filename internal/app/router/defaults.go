@@ -1,6 +1,6 @@
 package router
 
-import "github.com/lonegunmanb/trello-copilot/internal/app/kanban"
+import "github.com/lonegunmanb/jjc/internal/app/kanban"
 
 // DefaultRoutesHCL is the canonical `route {}` block set that mirrors
 // the legacy Go switch in internal/app/routing.go::Route(). It is

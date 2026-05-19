@@ -13,8 +13,8 @@ import (
 
 	copilot "github.com/github/copilot-sdk/go"
 
-	"github.com/lonegunmanb/trello-copilot/internal/app/kanban"
-	"github.com/lonegunmanb/trello-copilot/internal/app/router"
+	"github.com/lonegunmanb/jjc/internal/app/kanban"
+	"github.com/lonegunmanb/jjc/internal/app/router"
 )
 
 // WorkerSession is the subset of *copilot.Session that the dispatcher

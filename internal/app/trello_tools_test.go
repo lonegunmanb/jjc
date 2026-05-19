@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lonegunmanb/trello-copilot/internal/app/trelloclient"
+	"github.com/lonegunmanb/jjc/internal/app/trelloclient"
 )
 
 // fakeTrelloClient is a minimal trelloclient.Client for unit tests of

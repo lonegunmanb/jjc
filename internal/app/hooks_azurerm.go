@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lonegunmanb/trello-copilot/internal/app/aiassistedrefresh"
+	"github.com/lonegunmanb/jjc/internal/app/aiassistedrefresh"
 )
 
 // azurermProviderModuleLine is the exact (post-trim) module declaration

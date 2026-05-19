@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lonegunmanb/trello-copilot/internal/app/trelloclient"
-	"github.com/lonegunmanb/trello-copilot/internal/app/tunnel"
+	"github.com/lonegunmanb/jjc/internal/app/trelloclient"
+	"github.com/lonegunmanb/jjc/internal/app/tunnel"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/lonegunmanb/trello-copilot/internal/app/aiassistedrefresh"
+	"github.com/lonegunmanb/jjc/internal/app/aiassistedrefresh"
 )
 
 func writeGoMod(t *testing.T, dir, content string) {
