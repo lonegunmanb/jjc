@@ -297,3 +297,220 @@ func TestRender_RejectsSymlinkSource(t *testing.T) {
 		t.Fatalf("expected symlink-related error, got: %v", err)
 	}
 }
+
+// TestRender_SubstitutesKanbanVar verifies the core happy path: a
+// `{{kanban.<key>}}` reference is replaced by the matching entry in
+// Options.KanbanVars and the result no longer contains any `{{`.
+func TestRender_SubstitutesKanbanVar(t *testing.T) {
+	src := t.TempDir()
+	writeFile(t, src, "rules.md",
+		"target_list_id = {{kanban.action.id}} (default name {{kanban.action.name}})\n")
+
+	r, err := New(Options{
+		PlaybooksDir: src,
+		KanbanVars: map[string]string{
+			"kanban.action.id":   "abc123",
+			"kanban.action.name": "In action",
+		},
+		Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer r.Cleanup()
+
+	got, err := r.Read("rules.md")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	want := "target_list_id = abc123 (default name In action)\n"
+	if got != want {
+		t.Fatalf("unexpected render output\nwant: %q\ngot:  %q", want, got)
+	}
+	if strings.Contains(got, "{{") {
+		t.Fatalf("expected no `{{` left in rendered output, got: %s", got)
+	}
+}
+
+// TestRender_UnknownKanbanKeyFails asserts strict mode: a
+// `{{kanban.<key>}}` whose `<key>` is not in KanbanVars (typo,
+// renamed key, etc.) must fail New with a *RenderError carrying
+// reason=unknown_kanban_key and the original line/column of the `{{`.
+func TestRender_UnknownKanbanKeyFails(t *testing.T) {
+	src := t.TempDir()
+	// reference on line 3 of the file; deliberate typo `.di` for `.id`.
+	writeFile(t, src, "rules.md",
+		"line one\nline two\nuse {{ kanban.plan.di }} here\n")
+
+	_, err := New(Options{
+		PlaybooksDir: src,
+		KanbanVars: map[string]string{
+			"kanban.plan.id":   "p1",
+			"kanban.plan.name": "Analyze",
+		},
+		Logger: discardLogger(),
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown kanban key")
+	}
+	var rerr *RenderError
+	if !errors.As(err, &rerr) {
+		t.Fatalf("expected *RenderError, got %T: %v", err, err)
+	}
+	if rerr.Reason != "unknown_kanban_key" {
+		t.Fatalf("unexpected reason: %s", rerr.Reason)
+	}
+	if rerr.File != "rules.md" {
+		t.Fatalf("unexpected file: %s", rerr.File)
+	}
+	if rerr.Line != 3 {
+		t.Fatalf("expected line 3, got %d", rerr.Line)
+	}
+	if strings.TrimSpace(rerr.Reference) != "kanban.plan.di" {
+		t.Fatalf("unexpected reference: %q", rerr.Reference)
+	}
+}
+
+// TestRender_UnknownKanbanKeyWithNilKanbanVarsFails ensures the strict
+// behaviour also applies when KanbanVars is nil: a playbook that uses
+// the kanban namespace at all without anyone supplying values must
+// fail at boot, not at runtime.
+func TestRender_UnknownKanbanKeyWithNilKanbanVarsFails(t *testing.T) {
+	src := t.TempDir()
+	writeFile(t, src, "rules.md", "use {{kanban.action.id}} here\n")
+
+	_, err := New(Options{
+		PlaybooksDir: src,
+		// KanbanVars deliberately left nil
+		Logger: discardLogger(),
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown kanban key with nil KanbanVars")
+	}
+	var rerr *RenderError
+	if !errors.As(err, &rerr) {
+		t.Fatalf("expected *RenderError, got %T: %v", err, err)
+	}
+	if rerr.Reason != "unknown_kanban_key" {
+		t.Fatalf("unexpected reason: %s", rerr.Reason)
+	}
+}
+
+// TestRender_KanbanAndBasenameRefsCoexist verifies that the two
+// reference kinds are dispatched independently and can appear on the
+// same line without interference.
+func TestRender_KanbanAndBasenameRefsCoexist(t *testing.T) {
+	src := t.TempDir()
+	writeFile(t, src, "main.md",
+		"see {{shared.md}} for the rule about {{kanban.action.name}}\n")
+	writeFile(t, src, "shared.md", "shared body\n")
+
+	r, err := New(Options{
+		PlaybooksDir: src,
+		KanbanVars: map[string]string{
+			"kanban.action.name": "In action",
+		},
+		Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer r.Cleanup()
+
+	got, err := r.Read("main.md")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	sharedPath, _ := r.Path("shared.md")
+	if !strings.Contains(got, sharedPath) {
+		t.Fatalf("expected basename ref resolved to %q, got: %s", sharedPath, got)
+	}
+	if !strings.Contains(got, "In action") {
+		t.Fatalf("expected kanban ref resolved to In action, got: %s", got)
+	}
+	if strings.Contains(got, "{{") {
+		t.Fatalf("expected no `{{` left in output, got: %s", got)
+	}
+}
+
+// TestRender_KanbanRefValueWithSpecialCharsIsLiteral verifies the
+// substitution is a literal string write \u2014 no shell-style escaping,
+// no markdown handling, no surprises. A value like `[claw]:` (the kind
+// of thing an operator might pick as a custom comment prefix) must
+// land verbatim.
+func TestRender_KanbanRefValueWithSpecialCharsIsLiteral(t *testing.T) {
+	src := t.TempDir()
+	writeFile(t, src, "rules.md", "prefix={{kanban.agent_comment_prefix}}\n")
+
+	r, err := New(Options{
+		PlaybooksDir: src,
+		KanbanVars: map[string]string{
+			"kanban.agent_comment_prefix": "[claw]:",
+		},
+		Logger: discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer r.Cleanup()
+
+	got, _ := r.Read("rules.md")
+	if got != "prefix=[claw]:\n" {
+		t.Fatalf("expected literal substitution, got: %q", got)
+	}
+}
+
+// TestRender_KanbanRefDoesNotShadowBasenameValidation guards against a
+// regression where a non-kanban reference accidentally goes through
+// the kanban path (or vice versa). Specifically, a reference that
+// merely *contains* `kanban.` somewhere other than the prefix must
+// still be treated as a basename reference (and therefore fail
+// basename validation if it has a slash, etc.).
+func TestRender_KanbanRefDoesNotShadowBasenameValidation(t *testing.T) {
+	src := t.TempDir()
+	// `mykanban.md` does NOT start with "kanban." \u2014 it's a basename.
+	writeFile(t, src, "main.md", "see {{mykanban.md}}\n")
+	writeFile(t, src, "mykanban.md", "hi\n")
+
+	r, err := New(Options{
+		PlaybooksDir: src,
+		KanbanVars:   map[string]string{}, // no kanban keys at all
+		Logger:       discardLogger(),
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer r.Cleanup()
+
+	got, _ := r.Read("main.md")
+	wantPath, _ := r.Path("mykanban.md")
+	if !strings.Contains(got, wantPath) {
+		t.Fatalf("expected basename ref resolved to %q, got: %s", wantPath, got)
+	}
+}
+
+// TestRender_FailedKanbanRenderCleansTempDir mirrors the existing
+// missing-basename cleanup test: a failed render must remove the temp
+// dir so a failed boot leaves no stale state behind.
+func TestRender_FailedKanbanRenderCleansTempDir(t *testing.T) {
+	src := t.TempDir()
+	writeFile(t, src, "main.md", "{{kanban.plan.di}}\n") // unknown key
+
+	beforeEntries, _ := os.ReadDir(os.TempDir())
+	beforeCount := countOpenclawDirs(beforeEntries)
+
+	_, err := New(Options{
+		PlaybooksDir: src,
+		KanbanVars:   map[string]string{"kanban.plan.id": "p1"},
+		Logger:       discardLogger(),
+	})
+	if err == nil {
+		t.Fatal("expected render error")
+	}
+
+	afterEntries, _ := os.ReadDir(os.TempDir())
+	afterCount := countOpenclawDirs(afterEntries)
+	if afterCount > beforeCount {
+		t.Fatalf("failed render should clean up its temp dir: before=%d after=%d", beforeCount, afterCount)
+	}
+}
