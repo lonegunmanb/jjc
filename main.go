@@ -59,7 +59,7 @@ func main() {
 
 	// Always redirect logs to a file so stdio is free for the REPL.
 	logger := sysevent.NewFileSink(sysevent.WithLogFile(cfg.LogFile))
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 	sysevent.Set(logger)
 	gin.DefaultWriter = logger.Writer()
 	gin.DefaultErrorWriter = logger.Writer()
