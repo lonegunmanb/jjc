@@ -11,7 +11,11 @@ import (
 func TestFileSinkOpenSuccessWritesFileMode0600(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "operator.log")
 	s := NewFileSink(WithLogFile(path))
-	defer s.Close()
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Fatalf("close log file: %v", err)
+		}
+	})
 
 	Emitf(s, "gateway_starting", "trello_api_secret=%s log_file=%q", "<redacted len=11>", path)
 
