@@ -28,6 +28,10 @@ go.work.sum
 .env
 playbook/*
 
+# Gateway runtime artifacts
+*.log
+tmp/
+
 # Editor/IDE
 # .idea/
 # .vscode/
