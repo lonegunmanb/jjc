@@ -124,13 +124,50 @@ feedback loop). Two keys are exposed:
 
 | Key | Type | Value |
 |---|---|---|
-| `kanban.agent_comment_prefix` | string | The **first** entry of `agent_comment_prefixes`. This is the prefix workers **must use when writing comments** — every `trello_card_comment` call must begin its `text` with this exact string followed by a space. |
+| `kanban.agent_comment_prefix` | string | The **first** entry of `agent_comment_prefixes` (the "active prefix"; also called the *default agent comment prefix* in implementation — see `(*kanban.Resolved).ActiveAgentCommentPrefix()`). This is the prefix workers **must use when writing comments** — every `trello_card_comment` call must begin its `text` with this exact string followed by a space. |
 | `kanban.agent_comment_prefixes` | string | All entries of `agent_comment_prefixes`, joined by `, ` in declaration order. Use this only in descriptive narrative ("comments starting with one of {{kanban.agent_comment_prefixes}} are recognised as agent self-comments"). |
 
 > Singular vs plural matters. `kanban.agent_comment_prefix` is the
 > **active** prefix the worker must produce; `kanban.agent_comment_prefixes`
 > is for **descriptive** prose only. Never write a comment using
 > the plural form.
+
+#### 2.4.1 Default convention for *any* mention of the prefix
+
+**Unless a passage explicitly says otherwise, every mention of "the
+agent comment prefix" — in any playbook, in any worker prompt, in
+any inline example — refers to the active prefix and MUST be written
+as the template reference `{{kanban.agent_comment_prefix}}`, not as a
+literal string.**
+
+This applies in particular to:
+
+- Instructional sentences ("start your comment with the agent comment
+  prefix" → "start your comment with `{{kanban.agent_comment_prefix}}`").
+- Inline code fences that show a worker comment (`` ``[agent]: ...`` ``
+  → `` `` {{kanban.agent_comment_prefix}} ...`` ``).
+- Comment templates pasted into a fenced block that the worker is
+  supposed to copy verbatim.
+- Rule names and section headers when they otherwise read "the
+  `[agent]:` rule".
+
+The only places a literal `[agent]:` is allowed are:
+
+1. **Inside `router.hcl`** — it is the configuration value itself.
+2. **In this document**, where the literal is the subject under
+   discussion (the table rows in this section, the conversion table
+   in §5, the "do not template" list in §4, etc.). These passages
+   are explicitly *about* the literal and so the literal is required.
+3. **In a passage that explicitly qualifies the literal**, e.g. *"the
+   default value of `agent_comment_prefixes`, namely `[agent]:`"*.
+   The literal here is illustrative; the qualifier ("default value of
+   `agent_comment_prefixes`") is what carries the meaning.
+
+Every other mention is wrong by default and a reviewer should flag
+it. The rationale matches §2: the prefix is operator-configurable
+in `router.hcl`, so any literal that survives in a worker-facing
+prompt is a latent bug waiting for an operator to change the
+configuration.
 
 ---
 
@@ -345,9 +382,14 @@ Run through this checklist on the diff:
 
 - [ ] Every Trello list name appearing in the new content uses
       `{{kanban.<role>.name}}` (or `.id` where an ID is meant).
-- [ ] No literal `[agent]:` survives in any worker-authored example;
-      every occurrence uses `{{kanban.agent_comment_prefix}}` or
-      (for descriptive prose only) `{{kanban.agent_comment_prefixes}}`.
+- [ ] No literal `[agent]:` survives anywhere in the diff except the
+      three exceptions enumerated in §2.4.1 (router.hcl source, this
+      spec, or a passage that explicitly qualifies the literal as
+      "the default value of `agent_comment_prefixes`"). Every other
+      reference — instructional sentences, inline fences, comment
+      templates, rule names — MUST use `{{kanban.agent_comment_prefix}}`
+      (or, only for descriptive narrative about *all* recognised
+      prefixes, `{{kanban.agent_comment_prefixes}}`).
 - [ ] Every templated key is in the §2 schema. Typos will fail
       startup; catching them in review is faster.
 - [ ] Existing `{{<basename>.md>}}` cross-references still resolve
