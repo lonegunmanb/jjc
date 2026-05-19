@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
 func writeFile(t *testing.T, dir, name, content string) {
@@ -18,7 +20,7 @@ func writeFile(t *testing.T, dir, name, content string) {
 	}
 }
 
-func discardLogger() *log.Logger { return log.New(io.Discard, "", 0) }
+func discardLogger() sysevent.Sink { return sysevent.FromLogger(log.New(io.Discard, "", 0)) }
 
 func TestRender_SubstitutesBasenameToAbsPath(t *testing.T) {
 	src := t.TempDir()

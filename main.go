@@ -23,6 +23,7 @@ import (
 	"github.com/lonegunmanb/jjc/internal/app/prompts"
 	"github.com/lonegunmanb/jjc/internal/app/prompttmpl"
 	"github.com/lonegunmanb/jjc/internal/app/router"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"github.com/lonegunmanb/jjc/internal/app/trelloclient"
 	"github.com/lonegunmanb/jjc/internal/app/tunnel"
 )
@@ -57,24 +58,14 @@ func main() {
 	}
 
 	// Always redirect logs to a file so stdio is free for the REPL.
-	const logFileName = "trellooperator.log"
-	var logOut = os.Stderr
-	// Mode 0o600: the log captures card ids, model output, prompt
-	// previews and timing data. Restrict to the gateway user so a
-	// shared host (or a stray operator) cannot read it without
-	// explicit privilege escalation.
-	if f, ferr := os.OpenFile(logFileName, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); ferr != nil {
-		log.New(os.Stderr, "", log.LstdFlags).Printf("warning: cannot open log file %q (%v); falling back to stderr", logFileName, ferr)
-	} else {
-		logOut = f
-		defer f.Close()
-	}
-	logger := log.New(logOut, "", log.LstdFlags)
-	gin.DefaultWriter = logOut
-	gin.DefaultErrorWriter = logOut
+	logger := sysevent.NewFileSink(sysevent.WithLogFile(cfg.LogFile))
+	defer logger.Close()
+	sysevent.Set(logger)
+	gin.DefaultWriter = logger.Writer()
+	gin.DefaultErrorWriter = logger.Writer()
 
-	logger.Printf("event=gateway_starting %s log_file=%q", cfg.Redacted(), logFileName)
-	fmt.Fprintf(os.Stdout, "trello-gateway: logging to %s\n", logFileName)
+	sysevent.Emitf(logger, "gateway_starting", "%s log_file=%q", cfg.Redacted(), logger.LogFile())
+	fmt.Fprintf(os.Stdout, "trello-gateway: logging to %s\n", logger.LogFile())
 
 	runner := app.NewCopilotRunner(cfg.CopilotModel, logger)
 	runner.SetRouterDir(cfg.RouterDir)
@@ -88,7 +79,7 @@ func main() {
 		trelloclient.WithLogger(logger),
 	)
 	if terr != nil {
-		logger.Fatalf("event=trelloclient_init_failed err=%v", terr)
+		fatalf(logger, "trelloclient_init_failed", "err=%v", terr)
 	}
 	runner.SetTrelloClient(trelloClient)
 	runner.SetCardInfoFetcher(app.NewSDKCardInfoFetcher(trelloClient))
@@ -113,7 +104,7 @@ func main() {
 		// operators can grep the structured event token.
 		var rerr *kanban.ResolveError
 		if errors.As(kerr, &rerr) {
-			logger.Fatalf("event=kanban_resolve_failed board_id=%s missing_roles=%v ambiguous_roles=%v err=%v",
+			fatalf(logger, "kanban_resolve_failed", "board_id=%s missing_roles=%v ambiguous_roles=%v err=%v",
 				rerr.BoardID, rerr.MissingRoles, rerr.AmbiguousRoles, rerr)
 		}
 		// Distinguish "could not fetch lists" from "could not read HCL"
@@ -121,13 +112,13 @@ func main() {
 		// the log token differs so dashboards can alert on them
 		// separately.
 		if strings.Contains(kerr.Error(), "fetch board lists") {
-			logger.Fatalf("event=trello_board_lists_fetch_failed board_id=%s err=%v",
+			fatalf(logger, "trello_board_lists_fetch_failed", "board_id=%s err=%v",
 				cfg.KanbanBoardID, kerr)
 		}
-		logger.Fatalf("event=kanban_load_failed hcl_path=%s board_id=%s err=%v",
+		fatalf(logger, "kanban_load_failed", "hcl_path=%s board_id=%s err=%v",
 			hclPath, cfg.KanbanBoardID, kerr)
 	}
-	logger.Printf("event=kanban_resolved board_id=%s plan_id=%s action_id=%s done_id=%s wait_list_count=%d unclaimed_count=%d",
+	sysevent.Emitf(logger, "kanban_resolved", "board_id=%s plan_id=%s action_id=%s done_id=%s wait_list_count=%d unclaimed_count=%d",
 		resolved.BoardID, resolved.Plan.ID, resolved.Action.ID, resolved.Done.ID,
 		len(resolved.WaitListIDs), len(resolved.UnclaimedListNames))
 	runner.SetKanbanView(resolved)
@@ -147,18 +138,18 @@ func main() {
 		Logger:           logger,
 	})
 	if err != nil {
-		logger.Fatalf("event=playbooks_dir_invalid err=%v", err)
+		fatalf(logger, "playbooks_dir_invalid", "err=%v", err)
 	}
 	defer func() {
 		if err := renderer.Cleanup(); err != nil {
-			logger.Printf("event=playbooks_tempdir_cleanup_failed err=%v", err)
+			sysevent.Emitf(logger, "playbooks_tempdir_cleanup_failed", "err=%v", err)
 		}
 	}()
 	runner.SetPlaybooks(renderer)
 
 	ruleCfg, ruleErr := router.LoadRuleConfig(hclPath, cfg.PlaybooksDir)
 	if ruleErr != nil {
-		logger.Fatalf("event=rule_load_failed hcl_path=%s playbooks_dir=%s err=%v",
+		fatalf(logger, "rule_load_failed", "hcl_path=%s playbooks_dir=%s err=%v",
 			hclPath, cfg.PlaybooksDir, ruleErr)
 	}
 	runner.SetRuleEngine(router.NewRuleEngine(ruleCfg, cfg.RouterDir, resolved, logger))
@@ -169,7 +160,7 @@ func main() {
 	// that lived in internal/app/routing.go before #6 landed.
 	routeCfg, routeErr := router.LoadConfig(hclPath)
 	if routeErr != nil {
-		logger.Fatalf("event=route_load_failed hcl_path=%s err=%v", hclPath, routeErr)
+		fatalf(logger, "route_load_failed", "hcl_path=%s err=%v", hclPath, routeErr)
 	}
 	runner.Dispatcher().SetRouteEngine(router.NewEngine(routeCfg, resolved, logger))
 
@@ -188,10 +179,10 @@ func main() {
 		Logger:          logger,
 	})
 	if hookErr != nil {
-		logger.Printf("event=azurerm_refresh_hook_register_failed err=%v", hookErr)
+		sysevent.Emitf(logger, "azurerm_refresh_hook_register_failed", "err=%v", hookErr)
 	} else {
 		runner.RegisterWorkDirHook(azurermHook)
-		logger.Printf("event=azurerm_refresh_hook_registered impl=aiassistedrefresh")
+		sysevent.Emitf(logger, "azurerm_refresh_hook_registered", "impl=aiassistedrefresh")
 	}
 
 	globalLog := app.NewGlobalEventLog(128)
@@ -207,12 +198,12 @@ func main() {
 	if cfg.Tunnel == tunnel.Cloudflared {
 		p, perr := tunnel.NewCloudflaredProvider(tunnel.WithLogger(logger))
 		if perr != nil {
-			logger.Fatalf("event=tunnel_provider_init_failed provider=%s err=%v", cfg.Tunnel, perr)
+			fatalf(logger, "tunnel_provider_init_failed", "provider=%s err=%v", cfg.Tunnel, perr)
 		}
 		tunnelProvider = p
 		defer func() {
 			if err := tunnelProvider.Stop(); err != nil {
-				logger.Printf("event=tunnel_stop_failed provider=%s err=%v", tunnelProvider.Name(), err)
+				sysevent.Emitf(logger, "tunnel_stop_failed", "provider=%s err=%v", tunnelProvider.Name(), err)
 			}
 		}()
 	}
@@ -220,12 +211,12 @@ func main() {
 	startCtx, startCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	if err := runner.Start(startCtx); err != nil {
 		startCancel()
-		logger.Fatalf("start copilot runner: %v", err)
+		fatalf(logger, "", "start copilot runner: %v", err)
 	}
 	startCancel()
 	defer func() {
 		if err := runner.Stop(); err != nil {
-			logger.Printf("stop copilot runner: %v", err)
+			sysevent.Emitf(logger, "", "stop copilot runner: %v", err)
 		}
 	}()
 
@@ -246,13 +237,13 @@ func main() {
 
 	ln, lerr := net.Listen("tcp", cfg.ListenAddr)
 	if lerr != nil {
-		logger.Fatalf("event=http_listen_failed addr=%s err=%v", cfg.ListenAddr, lerr)
+		fatalf(logger, "http_listen_failed", "addr=%s err=%v", cfg.ListenAddr, lerr)
 	}
 	cfg.ListenAddr = ln.Addr().String()
 	go func() {
-		logger.Printf("event=http_listening addr=%s", cfg.ListenAddr)
+		sysevent.Emitf(logger, "http_listening", "addr=%s", cfg.ListenAddr)
 		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			logger.Fatalf("event=http_server_error err=%v", err)
+			fatalf(logger, "http_server_error", "err=%v", err)
 		}
 	}()
 
@@ -260,7 +251,7 @@ func main() {
 		tunnelCtx, tunnelCancel := context.WithTimeout(ctx, 60*time.Second)
 		if _, err := app.StartTunnelAndReconcile(tunnelCtx, &cfg, tunnelProvider, trelloClient, cfg.ListenAddr, logger); err != nil {
 			tunnelCancel()
-			logger.Fatalf("event=tunnel_start_failed provider=%s err=%v", cfg.Tunnel, err)
+			fatalf(logger, "tunnel_start_failed", "provider=%s err=%v", cfg.Tunnel, err)
 		}
 		tunnelCancel()
 	}
@@ -275,9 +266,9 @@ func main() {
 			<-ctx.Done()
 			p.Quit()
 		}()
-		logger.Printf("event=tui_starting")
+		sysevent.Emitf(logger, "tui_starting", "")
 		if _, err := p.Run(); err != nil {
-			logger.Printf("event=tui_error err=%v", err)
+			sysevent.Emitf(logger, "tui_error", "err=%v", err)
 		}
 		stop() // cancel context to trigger shutdown
 	} else {
@@ -290,12 +281,17 @@ func main() {
 		<-ctx.Done()
 	}
 
-	logger.Printf("event=shutdown_signal")
+	sysevent.Emitf(logger, "shutdown_signal", "")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.Printf("event=http_shutdown_error err=%v", err)
+		sysevent.Emitf(logger, "http_shutdown_error", "err=%v", err)
 	}
-	logger.Printf("event=http_stopped")
+	sysevent.Emitf(logger, "http_stopped", "")
+}
+
+func fatalf(s sysevent.Sink, token, format string, args ...any) {
+	sysevent.Emitf(s, token, format, args...)
+	os.Exit(1)
 }

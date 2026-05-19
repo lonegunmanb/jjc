@@ -22,8 +22,8 @@ package prompttmpl
 import (
 	"errors"
 	"fmt"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,7 +37,7 @@ type Renderer struct {
 	dir        string            // absolute path to the temp directory
 	files      map[string]string // basename -> absolute path inside dir
 	kanbanVars map[string]string // accept-list for `{{kanban.*}}` references (nil means "none allowed")
-	logger     *log.Logger
+	logger     sysevent.Sink
 }
 
 // Options configures how a Renderer is built.
@@ -72,8 +72,8 @@ type Options struct {
 	KanbanVars map[string]string
 
 	// Logger receives structured event lines (one per significant
-	// step). Optional; defaults to log.Default().
-	Logger *log.Logger
+	// step). Optional; defaults to sysevent.Default().
+	Logger sysevent.Sink
 }
 
 // New builds a Renderer: it creates a temp directory, materialises the
@@ -87,7 +87,7 @@ type Options struct {
 func New(opts Options) (*Renderer, error) {
 	logger := opts.Logger
 	if logger == nil {
-		logger = log.Default()
+		logger = sysevent.Default()
 	}
 
 	if opts.PlaybooksDir == "" {
@@ -105,7 +105,7 @@ func New(opts Options) (*Renderer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("prompttmpl: create temp dir: %w", err)
 	}
-	logger.Printf("event=playbooks_tempdir_created path=%s source=%s", tempDir, opts.PlaybooksDir)
+	sysevent.Emitf(logger, "playbooks_tempdir_created", "path=%s source=%s", tempDir, opts.PlaybooksDir)
 
 	r := &Renderer{
 		dir:        tempDir,
@@ -116,7 +116,7 @@ func New(opts Options) (*Renderer, error) {
 
 	cleanupOnError := func() {
 		if rmErr := os.RemoveAll(tempDir); rmErr != nil {
-			logger.Printf("event=playbooks_tempdir_cleanup_failed path=%s err=%v", tempDir, rmErr)
+			sysevent.Emitf(logger, "playbooks_tempdir_cleanup_failed", "path=%s err=%v", tempDir, rmErr)
 		}
 	}
 
@@ -196,7 +196,7 @@ func New(opts Options) (*Renderer, error) {
 		}
 	}
 
-	logger.Printf("event=playbooks_rendered count=%d dir=%s kanban_vars=%d",
+	sysevent.Emitf(logger, "playbooks_rendered", "count=%d dir=%s kanban_vars=%d",
 		len(r.files), tempDir, len(r.kanbanVars))
 	return r, nil
 }
@@ -243,10 +243,10 @@ func (r *Renderer) Cleanup() error {
 	}
 	err := os.RemoveAll(r.dir)
 	if err != nil {
-		r.logger.Printf("event=playbooks_tempdir_cleanup_failed path=%s err=%v", r.dir, err)
+		sysevent.Emitf(r.logger, "playbooks_tempdir_cleanup_failed", "path=%s err=%v", r.dir, err)
 		return err
 	}
-	r.logger.Printf("event=playbooks_tempdir_cleaned path=%s", r.dir)
+	sysevent.Emitf(r.logger, "playbooks_tempdir_cleaned", "path=%s", r.dir)
 	r.dir = ""
 	r.files = nil
 	return nil
@@ -273,12 +273,12 @@ func (r *Renderer) renderFile(name, path string) error {
 	}
 	rendered, rerr := renderBytes(src, name, r.files, r.kanbanVars)
 	if rerr != nil {
-		r.logger.Printf("event=playbook_render_failed file=%s line=%d column=%d reference=%q reason=%s",
+		sysevent.Emitf(r.logger, "playbook_render_failed", "file=%s line=%d column=%d reference=%q reason=%s",
 			name, rerr.Line, rerr.Column, rerr.Reference, rerr.Reason)
 		return rerr
 	}
 	if int64(len(rendered)) > MaxRenderedFileBytes {
-		r.logger.Printf("event=playbook_render_failed file=%s reason=rendered_size_exceeded size=%d limit=%d",
+		sysevent.Emitf(r.logger, "playbook_render_failed", "file=%s reason=rendered_size_exceeded size=%d limit=%d",
 			name, len(rendered), MaxRenderedFileBytes)
 		return fmt.Errorf("prompttmpl: rendered %q is %d bytes, exceeds %d",
 			name, len(rendered), MaxRenderedFileBytes)

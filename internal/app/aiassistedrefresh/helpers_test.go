@@ -3,13 +3,15 @@ package aiassistedrefresh
 import (
 	"io"
 	"log"
+
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
-// discardLogger returns a *log.Logger that throws every line away. Tests
+// discardLogger returns a Sink that throws every line away. Tests
 // that don't want the production logger spamming `go test` output use it.
 // Lives in a _test.go file so it is excluded from the production binary.
-func discardLogger() *log.Logger {
-	return log.New(io.Discard, "", 0)
+func discardLogger() sysevent.Sink {
+	return sysevent.FromLogger(log.New(io.Discard, "", 0))
 }
 
 // withRunner injects a fake command runner. Test-only seam — kept under

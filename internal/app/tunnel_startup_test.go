@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"github.com/lonegunmanb/jjc/internal/app/trelloclient"
 	"github.com/lonegunmanb/jjc/internal/app/tunnel"
 )
@@ -47,7 +48,7 @@ func TestStartTunnelAndReconcileDefaultPathUpdatesWebhook(t *testing.T) {
 	trelloClient, err := trelloclient.New(
 		trelloclient.WithCredentials("key", "tok"),
 		trelloclient.WithServer(trelloServer.URL),
-		trelloclient.WithLogger(log.New(io.Discard, "", 0)),
+		trelloclient.WithLogger(sysevent.FromLogger(log.New(io.Discard, "", 0))),
 	)
 	if err != nil {
 		t.Fatalf("trelloclient.New: %v", err)
@@ -68,7 +69,7 @@ func TestStartTunnelAndReconcileDefaultPathUpdatesWebhook(t *testing.T) {
 	provider, err := tunnel.NewCloudflaredProvider(
 		tunnel.WithBinary(fakeCloudflared),
 		tunnel.WithHTTPClient(headClient),
-		tunnel.WithLogger(log.New(io.Discard, "", 0)),
+		tunnel.WithLogger(sysevent.FromLogger(log.New(io.Discard, "", 0))),
 	)
 	if err != nil {
 		t.Fatalf("NewCloudflaredProvider: %v", err)
@@ -78,7 +79,7 @@ func TestStartTunnelAndReconcileDefaultPathUpdatesWebhook(t *testing.T) {
 	cfg := Config{Tunnel: tunnel.Cloudflared, TrelloAPIToken: "tok", KanbanBoardID: "board-1"}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	id, err := StartTunnelAndReconcile(ctx, &cfg, provider, trelloClient, "127.0.0.1:18790", log.New(io.Discard, "", 0))
+	id, err := StartTunnelAndReconcile(ctx, &cfg, provider, trelloClient, "127.0.0.1:18790", sysevent.FromLogger(log.New(io.Discard, "", 0)))
 	if err != nil {
 		t.Fatalf("StartTunnelAndReconcile: %v", err)
 	}

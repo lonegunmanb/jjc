@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
 // sampleHCL is the canonical `kanban {}` block from the issue. Tests
@@ -273,7 +275,7 @@ func TestLoadAndResolve_HappyPath(t *testing.T) {
 	path := writeHCL(t, sampleHCL)
 	fetcher := &stubFetcher{lists: happyBoardLists()}
 	res, err := LoadAndResolve(context.Background(), path, "B1", fetcher,
-		log.New(io.Discard, "", 0))
+		sysevent.FromLogger(log.New(io.Discard, "", 0)))
 	if err != nil {
 		t.Fatalf("LoadAndResolve: %v", err)
 	}
@@ -290,7 +292,7 @@ func TestLoadAndResolve_UnclaimedListLogged(t *testing.T) {
 	var buf strings.Builder
 	logger := log.New(&buf, "", 0)
 
-	res, err := LoadAndResolve(context.Background(), path, "B1", fetcher, logger)
+	res, err := LoadAndResolve(context.Background(), path, "B1", fetcher, sysevent.FromLogger(logger))
 	if err != nil {
 		t.Fatalf("LoadAndResolve: %v", err)
 	}
@@ -309,7 +311,7 @@ func TestLoadAndResolve_UnclaimedListLogged(t *testing.T) {
 func TestLoadAndResolve_BoardIDMissing(t *testing.T) {
 	path := writeHCL(t, sampleHCL)
 	_, err := LoadAndResolve(context.Background(), path, "",
-		&stubFetcher{lists: happyBoardLists()}, log.New(io.Discard, "", 0))
+		&stubFetcher{lists: happyBoardLists()}, sysevent.FromLogger(log.New(io.Discard, "", 0)))
 	if err == nil {
 		t.Fatal("expected error when board id is empty")
 	}
@@ -319,7 +321,7 @@ func TestLoadAndResolve_FetchError(t *testing.T) {
 	path := writeHCL(t, sampleHCL)
 	fetcher := &stubFetcher{err: errors.New("trello 401")}
 	_, err := LoadAndResolve(context.Background(), path, "B1", fetcher,
-		log.New(io.Discard, "", 0))
+		sysevent.FromLogger(log.New(io.Discard, "", 0)))
 	if err == nil {
 		t.Fatal("expected error when fetch fails")
 	}

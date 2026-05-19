@@ -11,11 +11,13 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
 // silentLogger discards everything; tests don't care about log noise.
-func silentLogger() *log.Logger {
-	return log.New(io.Discard, "", 0)
+func silentLogger() sysevent.Sink {
+	return sysevent.FromLogger(log.New(io.Discard, "", 0))
 }
 
 // stubGitRunner records each invocation and returns canned outcomes per

@@ -1,7 +1,6 @@
 package router
 
 import (
-	"log"
 	"strings"
 
 	"github.com/hashicorp/hcl/v2"
@@ -10,6 +9,7 @@ import (
 	"github.com/zclconf/go-cty/cty/function"
 
 	"github.com/lonegunmanb/jjc/internal/app/kanban"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
 // Event carries the per-webhook variables visible to a route's `when`
@@ -47,7 +47,7 @@ type Decision struct {
 type Engine struct {
 	routes []Route
 	view   *kanban.Resolved
-	logger *log.Logger
+	logger sysevent.Sink
 	funcs  map[string]function.Function
 	kanban cty.Value // pre-built kanban.* object reused on every Evaluate
 }
@@ -56,11 +56,11 @@ type Engine struct {
 // kanban view. The view may be nil, in which case the `kanban.*`
 // object exposes empty lists and empty role names; routes that depend
 // on those values will simply not match. logger may be nil; the engine
-// then defaults to log.Default() for the structured failure-mode log
+// then defaults to sysevent.Default() for the structured failure-mode log
 // lines documented on the package doc.
-func NewEngine(cfg Config, view *kanban.Resolved, logger *log.Logger) *Engine {
+func NewEngine(cfg Config, view *kanban.Resolved, logger sysevent.Sink) *Engine {
 	if logger == nil {
-		logger = log.Default()
+		logger = sysevent.Default()
 	}
 	e := &Engine{
 		routes: append([]Route(nil), cfg.Routes...),
@@ -92,13 +92,13 @@ func (e *Engine) Evaluate(ev Event) Decision {
 		if diags.HasErrors() {
 			// Skip-and-continue per the issue's failure-mode decision.
 			// The dispatch must not abort because one rule has a typo.
-			e.logger.Printf("event=route_when_eval_error rule=%q diag=%q",
+			sysevent.Emitf(e.logger, "route_when_eval_error", "rule=%q diag=%q",
 				r.Name, diags.Error())
 			continue
 		}
 		if v.IsNull() || !v.Type().Equals(cty.Bool) {
 			// A non-bool `when` is treated like an eval error; skip.
-			e.logger.Printf("event=route_when_eval_error rule=%q diag=%q",
+			sysevent.Emitf(e.logger, "route_when_eval_error", "rule=%q diag=%q",
 				r.Name, "when expression did not evaluate to bool")
 			continue
 		}
@@ -107,7 +107,7 @@ func (e *Engine) Evaluate(ev Event) Decision {
 		}
 	}
 
-	e.logger.Printf("event=router_no_route_matched action_type=%q card_id=%q",
+	sysevent.Emitf(e.logger, "router_no_route_matched", "action_type=%q card_id=%q",
 		ev.Type, ev.CardID)
 	return Decision{Do: ActionDrop, Reason: "router_no_route_matched"}
 }

@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os/exec"
@@ -33,7 +33,7 @@ type Provider interface {
 type CloudflaredProvider struct {
 	binary     string
 	httpClient *http.Client
-	logger     *log.Logger
+	logger     sysevent.Sink
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
@@ -57,7 +57,7 @@ func WithHTTPClient(client *http.Client) CloudflaredOption {
 	}
 }
 
-func WithLogger(logger *log.Logger) CloudflaredOption {
+func WithLogger(logger sysevent.Sink) CloudflaredOption {
 	return func(p *CloudflaredProvider) {
 		if logger != nil {
 			p.logger = logger
@@ -69,7 +69,7 @@ func NewCloudflaredProvider(opts ...CloudflaredOption) (*CloudflaredProvider, er
 	p := &CloudflaredProvider{
 		binary:     Cloudflared,
 		httpClient: &http.Client{Timeout: 5 * time.Second},
-		logger:     log.Default(),
+		logger:     sysevent.Default(),
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -119,7 +119,7 @@ func (p *CloudflaredProvider) Start(ctx context.Context, localAddr string) (stri
 	go scanForURL(stdout, urlCh, logCh)
 	go func() {
 		for line := range logCh {
-			p.logger.Printf("event=cloudflared_output line=%q", line)
+			sysevent.Emitf(p.logger, "cloudflared_output", "line=%q", line)
 		}
 	}()
 
@@ -232,7 +232,7 @@ func (p *CloudflaredProvider) waitForHEAD(ctx context.Context, publicURL string)
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				p.logger.Printf("event=cloudflared_self_test_ok url=%s attempts=%d", publicURL, attempt)
+				sysevent.Emitf(p.logger, "cloudflared_self_test_ok", "url=%s attempts=%d", publicURL, attempt)
 				return nil
 			}
 			err = fmt.Errorf("unexpected status %d", resp.StatusCode)
@@ -240,7 +240,7 @@ func (p *CloudflaredProvider) waitForHEAD(ctx context.Context, publicURL string)
 		if time.Now().After(deadline) {
 			return fmt.Errorf("cloudflared HEAD self-test failed for %s: %w", publicURL, err)
 		}
-		p.logger.Printf("event=cloudflared_self_test_retry url=%s attempt=%d err=%v", publicURL, attempt, err)
+		sysevent.Emitf(p.logger, "cloudflared_self_test_retry", "url=%s attempt=%d err=%v", publicURL, attempt, err)
 		select {
 		case <-time.After(500 * time.Millisecond):
 		case <-ctx.Done():

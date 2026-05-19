@@ -3,10 +3,10 @@ package app
 import (
 	"context"
 	"errors"
-	"log"
 	"net/http"
 	"sync"
 
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"github.com/lonegunmanb/jjc/internal/app/trelloclient"
 	"github.com/lonegunmanb/jjc/internal/app/tunnel"
 )
@@ -37,9 +37,9 @@ func (h *switchableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	next.ServeHTTP(w, r)
 }
 
-func NewValidationHandler(logger *log.Logger) http.Handler {
+func NewValidationHandler(logger sysevent.Sink) http.Handler {
 	if logger == nil {
-		logger = log.Default()
+		logger = sysevent.Default()
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -52,13 +52,13 @@ func NewValidationHandler(logger *log.Logger) http.Handler {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		logger.Printf("event=trello_validation method=HEAD remote=%s ua=%q", r.RemoteAddr, r.UserAgent())
+		sysevent.Emitf(logger, "trello_validation", "method=HEAD remote=%s ua=%q", r.RemoteAddr, r.UserAgent())
 		w.WriteHeader(http.StatusOK)
 	})
 	return mux
 }
 
-func StartTunnelAndReconcile(ctx context.Context, cfg *Config, provider tunnel.Provider, trelloClient trelloclient.Client, localAddr string, logger *log.Logger) (string, error) {
+func StartTunnelAndReconcile(ctx context.Context, cfg *Config, provider tunnel.Provider, trelloClient trelloclient.Client, localAddr string, logger sysevent.Sink) (string, error) {
 	if cfg == nil {
 		return "", errors.New("config is nil")
 	}
@@ -82,7 +82,7 @@ func StartTunnelAndReconcile(ctx context.Context, cfg *Config, provider tunnel.P
 	}
 	cfg.CallbackURL = publicURL
 	if logger != nil {
-		logger.Printf("event=trello_webhook_reconciled provider=%s board_id=%s webhook_id=%s callback_url=%s", provider.Name(), cfg.KanbanBoardID, webhookID, publicURL)
+		sysevent.Emitf(logger, "trello_webhook_reconciled", "provider=%s board_id=%s webhook_id=%s callback_url=%s", provider.Name(), cfg.KanbanBoardID, webhookID, publicURL)
 	}
 	return webhookID, nil
 }
