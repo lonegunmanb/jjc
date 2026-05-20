@@ -2,10 +2,10 @@ package app
 
 import (
 	"fmt"
-	"log"
 	"strings"
 
 	copilot "github.com/github/copilot-sdk/go"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
 // logSessionEvent prints a structured single-line log entry for one Copilot
@@ -16,8 +16,7 @@ import (
 //
 // The cardID parameter identifies the Trello card whose worker session
 // produced the event, so multi-card concurrent log lines can be separated.
-func logSessionEvent(logger *log.Logger, cardID string, e copilot.SessionEvent) {
-	const prefix = "event=copilot_sdk"
+func logSessionEvent(logger sysevent.Sink, cardID string, e copilot.SessionEvent) {
 
 	// Drop high-frequency / low-signal events that otherwise drown out the log.
 	switch e.Type {
@@ -30,39 +29,39 @@ func logSessionEvent(logger *log.Logger, cardID string, e copilot.SessionEvent) 
 	// ---------------- session lifecycle ----------------
 	case *copilot.SessionStartData:
 		model := strDeref(d.SelectedModel)
-		logger.Printf("%s sub=session_start card=%s session_id=%s model=%s producer=%s version=%v",
-			prefix, cardID, d.SessionID, model, d.Producer, d.CopilotVersion)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=session_start card=%s session_id=%s model=%s producer=%s version=%v",
+			cardID, d.SessionID, model, d.Producer, d.CopilotVersion)
 	case *copilot.SessionResumeData:
-		logger.Printf("%s sub=session_resume card=%s", prefix, cardID)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=session_resume card=%s", cardID)
 	case *copilot.SessionShutdownData:
-		logger.Printf("%s sub=session_shutdown card=%s shutdown_type=%s premium_requests=%v api_duration_ms=%v",
-			prefix, cardID, d.ShutdownType, d.TotalPremiumRequests, d.TotalAPIDurationMs)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=session_shutdown card=%s shutdown_type=%s premium_requests=%v api_duration_ms=%v",
+			cardID, d.ShutdownType, d.TotalPremiumRequests, d.TotalAPIDurationMs)
 	case *copilot.SessionIdleData:
 		aborted := false
 		if d.Aborted != nil {
 			aborted = *d.Aborted
 		}
-		logger.Printf("%s sub=session_idle card=%s aborted=%t", prefix, cardID, aborted)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=session_idle card=%s aborted=%t", cardID, aborted)
 	case *copilot.SessionErrorData:
-		logger.Printf("%s sub=session_error card=%s error_type=%s message=%q status=%v",
-			prefix, cardID, d.ErrorType, d.Message, intDeref(d.StatusCode))
+		sysevent.Emitf(logger, "copilot_sdk", "sub=session_error card=%s error_type=%s message=%q status=%v",
+			cardID, d.ErrorType, d.Message, intDeref(d.StatusCode))
 	case *copilot.SessionInfoData:
-		logger.Printf("%s sub=session_info card=%s info_type=%s message=%q",
-			prefix, cardID, d.InfoType, d.Message)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=session_info card=%s info_type=%s message=%q",
+			cardID, d.InfoType, d.Message)
 	case *copilot.SessionWarningData:
-		logger.Printf("%s sub=session_warning card=%s warning_type=%s message=%q",
-			prefix, cardID, d.WarningType, d.Message)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=session_warning card=%s warning_type=%s message=%q",
+			cardID, d.WarningType, d.Message)
 
 	// ---------------- assistant turn ----------------
 	case *copilot.AssistantTurnStartData:
-		logger.Printf("%s sub=assistant_turn_start card=%s turn_id=%s",
-			prefix, cardID, d.TurnID)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=assistant_turn_start card=%s turn_id=%s",
+			cardID, d.TurnID)
 	case *copilot.AssistantIntentData:
-		logger.Printf("%s sub=assistant_intent card=%s intent=%q",
-			prefix, cardID, d.Intent)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=assistant_intent card=%s intent=%q",
+			cardID, d.Intent)
 	case *copilot.AssistantReasoningData:
-		logger.Printf("%s sub=assistant_reasoning card=%s chars=%d preview=%q",
-			prefix, cardID, len(d.Content), preview(d.Content, 200))
+		sysevent.Emitf(logger, "copilot_sdk", "sub=assistant_reasoning card=%s chars=%d preview=%q",
+			cardID, len(d.Content), preview(d.Content, 200))
 	case *copilot.AssistantMessageData:
 		// Skip empty assistant placeholder messages: when the model only emits
 		// a tool call (no text), the SDK still fires AssistantMessageData with
@@ -70,89 +69,89 @@ func logSessionEvent(logger *log.Logger, cardID string, e copilot.SessionEvent) 
 		if len(d.Content) == 0 {
 			return
 		}
-		logger.Printf("%s sub=assistant_message card=%s message_id=%s chars=%d tool_requests=%d preview=%q",
-			prefix, cardID, d.MessageID, len(d.Content), len(d.ToolRequests), preview(d.Content, 200))
+		sysevent.Emitf(logger, "copilot_sdk", "sub=assistant_message card=%s message_id=%s chars=%d tool_requests=%d preview=%q",
+			cardID, d.MessageID, len(d.Content), len(d.ToolRequests), preview(d.Content, 200))
 	case *copilot.AssistantTurnEndData:
-		logger.Printf("%s sub=assistant_turn_end card=%s turn_id=%s",
-			prefix, cardID, d.TurnID)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=assistant_turn_end card=%s turn_id=%s",
+			cardID, d.TurnID)
 	case *copilot.AssistantUsageData:
-		logger.Printf("%s sub=assistant_usage card=%s model=%s in=%v out=%v cache_read=%v cache_write=%v duration_ms=%v",
-			prefix, cardID, d.Model,
+		sysevent.Emitf(logger, "copilot_sdk", "sub=assistant_usage card=%s model=%s in=%v out=%v cache_read=%v cache_write=%v duration_ms=%v",
+			cardID, d.Model,
 			floatDeref(d.InputTokens), floatDeref(d.OutputTokens),
 			floatDeref(d.CacheReadTokens), floatDeref(d.CacheWriteTokens),
 			floatDeref(d.Duration))
 
 	// ---------------- tool execution ----------------
 	case *copilot.ToolUserRequestedData:
-		logger.Printf("%s sub=tool_user_requested card=%s tool=%s call_id=%s",
-			prefix, cardID, d.ToolName, d.ToolCallID)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=tool_user_requested card=%s tool=%s call_id=%s",
+			cardID, d.ToolName, d.ToolCallID)
 	case *copilot.ToolExecutionStartData:
-		logger.Printf("%s sub=tool_start card=%s tool=%s call_id=%s args_preview=%q",
-			prefix, cardID, d.ToolName, d.ToolCallID, preview(fmt.Sprintf("%v", d.Arguments), 200))
+		sysevent.Emitf(logger, "copilot_sdk", "sub=tool_start card=%s tool=%s call_id=%s args_preview=%q",
+			cardID, d.ToolName, d.ToolCallID, preview(fmt.Sprintf("%v", d.Arguments), 200))
 	case *copilot.ToolExecutionProgressData:
-		logger.Printf("%s sub=tool_progress card=%s call_id=%s message=%q",
-			prefix, cardID, d.ToolCallID, d.ProgressMessage)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=tool_progress card=%s call_id=%s message=%q",
+			cardID, d.ToolCallID, d.ProgressMessage)
 	case *copilot.ToolExecutionCompleteData:
-		logger.Printf("%s sub=tool_complete card=%s call_id=%s success=%t",
-			prefix, cardID, d.ToolCallID, d.Success)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=tool_complete card=%s call_id=%s success=%t",
+			cardID, d.ToolCallID, d.Success)
 
 	// ---------------- permissions ----------------
 	case *copilot.PermissionRequestedData:
 		toolName := strDeref(d.PermissionRequest.ToolName)
-		logger.Printf("%s sub=permission_requested card=%s request_id=%s kind=%s tool=%s",
-			prefix, cardID, d.RequestID, d.PermissionRequest.Kind, toolName)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=permission_requested card=%s request_id=%s kind=%s tool=%s",
+			cardID, d.RequestID, d.PermissionRequest.Kind, toolName)
 	case *copilot.PermissionCompletedData:
-		logger.Printf("%s sub=permission_completed card=%s request_id=%s result_kind=%s",
-			prefix, cardID, d.RequestID, d.Result.Kind)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=permission_completed card=%s request_id=%s result_kind=%s",
+			cardID, d.RequestID, d.Result.Kind)
 
 	// ---------------- sub-agents ----------------
 	case *copilot.SubagentStartedData:
-		logger.Printf("%s sub=subagent_started card=%s call_id=%s name=%s display=%q",
-			prefix, cardID, d.ToolCallID, d.AgentName, d.AgentDisplayName)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=subagent_started card=%s call_id=%s name=%s display=%q",
+			cardID, d.ToolCallID, d.AgentName, d.AgentDisplayName)
 	case *copilot.SubagentCompletedData:
-		logger.Printf("%s sub=subagent_completed card=%s call_id=%s name=%s tool_calls=%v tokens=%v duration_ms=%v",
-			prefix, cardID, d.ToolCallID, d.AgentName,
+		sysevent.Emitf(logger, "copilot_sdk", "sub=subagent_completed card=%s call_id=%s name=%s tool_calls=%v tokens=%v duration_ms=%v",
+			cardID, d.ToolCallID, d.AgentName,
 			floatDeref(d.TotalToolCalls), floatDeref(d.TotalTokens), floatDeref(d.DurationMs))
 	case *copilot.SubagentFailedData:
-		logger.Printf("%s sub=subagent_failed card=%s call_id=%s name=%s error=%q",
-			prefix, cardID, d.ToolCallID, d.AgentName, d.Error)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=subagent_failed card=%s call_id=%s name=%s error=%q",
+			cardID, d.ToolCallID, d.AgentName, d.Error)
 
 	// ---------------- hooks ----------------
 	case *copilot.HookStartData:
-		logger.Printf("%s sub=hook_start card=%s hook_id=%s type=%s",
-			prefix, cardID, d.HookInvocationID, d.HookType)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=hook_start card=%s hook_id=%s type=%s",
+			cardID, d.HookInvocationID, d.HookType)
 	case *copilot.HookEndData:
-		logger.Printf("%s sub=hook_end card=%s hook_id=%s type=%s success=%t",
-			prefix, cardID, d.HookInvocationID, d.HookType, d.Success)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=hook_end card=%s hook_id=%s type=%s success=%t",
+			cardID, d.HookInvocationID, d.HookType, d.Success)
 
 	// ---------------- system / context ----------------
 	case *copilot.SystemMessageData:
-		logger.Printf("%s sub=system_message card=%s role=%s chars=%d",
-			prefix, cardID, d.Role, len(d.Content))
+		sysevent.Emitf(logger, "copilot_sdk", "sub=system_message card=%s role=%s chars=%d",
+			cardID, d.Role, len(d.Content))
 	case *copilot.SystemNotificationData:
-		logger.Printf("%s sub=system_notification card=%s kind=%v preview=%q",
-			prefix, cardID, d.Kind, preview(d.Content, 200))
+		sysevent.Emitf(logger, "copilot_sdk", "sub=system_notification card=%s kind=%v preview=%q",
+			cardID, d.Kind, preview(d.Content, 200))
 	case *copilot.SessionTruncationData:
-		logger.Printf("%s sub=truncation card=%s pre_tokens=%v post_tokens=%v removed_tokens=%v removed_msgs=%v",
-			prefix, cardID, d.PreTruncationTokensInMessages, d.PostTruncationTokensInMessages,
+		sysevent.Emitf(logger, "copilot_sdk", "sub=truncation card=%s pre_tokens=%v post_tokens=%v removed_tokens=%v removed_msgs=%v",
+			cardID, d.PreTruncationTokensInMessages, d.PostTruncationTokensInMessages,
 			d.TokensRemovedDuringTruncation, d.MessagesRemovedDuringTruncation)
 	case *copilot.SessionCompactionStartData:
-		logger.Printf("%s sub=compaction_start card=%s system_tokens=%v conv_tokens=%v tools_tokens=%v",
-			prefix, cardID, floatDeref(d.SystemTokens), floatDeref(d.ConversationTokens), floatDeref(d.ToolDefinitionsTokens))
+		sysevent.Emitf(logger, "copilot_sdk", "sub=compaction_start card=%s system_tokens=%v conv_tokens=%v tools_tokens=%v",
+			cardID, floatDeref(d.SystemTokens), floatDeref(d.ConversationTokens), floatDeref(d.ToolDefinitionsTokens))
 	case *copilot.SessionCompactionCompleteData:
-		logger.Printf("%s sub=compaction_complete card=%s success=%t pre_tokens=%v post_tokens=%v removed_tokens=%v",
-			prefix, cardID, d.Success, floatDeref(d.PreCompactionTokens), floatDeref(d.PostCompactionTokens), floatDeref(d.TokensRemoved))
+		sysevent.Emitf(logger, "copilot_sdk", "sub=compaction_complete card=%s success=%t pre_tokens=%v post_tokens=%v removed_tokens=%v",
+			cardID, d.Success, floatDeref(d.PreCompactionTokens), floatDeref(d.PostCompactionTokens), floatDeref(d.TokensRemoved))
 
 	case *copilot.UserMessageData:
-		logger.Printf("%s sub=user_message card=%s chars=%d source=%s",
-			prefix, cardID, len(d.Content), strDeref(d.Source))
+		sysevent.Emitf(logger, "copilot_sdk", "sub=user_message card=%s chars=%d source=%s",
+			cardID, len(d.Content), strDeref(d.Source))
 	case *copilot.AbortData:
-		logger.Printf("%s sub=abort card=%s reason=%q", prefix, cardID, d.Reason)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=abort card=%s reason=%q", cardID, d.Reason)
 
 	default:
 		// Catch-all so unhandled event types are still observable.
-		logger.Printf("%s sub=other card=%s event_type=%s data_type=%T",
-			prefix, cardID, e.Type, e.Data)
+		sysevent.Emitf(logger, "copilot_sdk", "sub=other card=%s event_type=%s data_type=%T",
+			cardID, e.Type, e.Data)
 	}
 }
 

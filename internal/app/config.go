@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"github.com/lonegunmanb/jjc/internal/app/tunnel"
 )
 
@@ -43,6 +44,9 @@ type Config struct {
 	// deployment never silently routes events with an un-resolved
 	// kanban view.
 	KanbanBoardID string
+	// LogFile is the operator log destination. Defaults to the historical
+	// trellooperator.log name for backward compatibility.
+	LogFile string
 }
 
 // DefaultPlaybooksDirName is the conventional default basename of the
@@ -77,6 +81,7 @@ func loadConfigWithOutput(args []string, helpOutput io.Writer) (Config, error) {
 		RouterDir:     os.Getenv("WORKSPACE_TRELLO_ROUTER_DIR"),
 		PlaybooksDir:  envOrDefault("TRELLO_PLAYBOOKS_DIR", defaultPlaybooksDir()),
 		KanbanBoardID: os.Getenv("TRELLO_KANBAN_BOARD_ID"),
+		LogFile:       envOrDefault("LOG_FILE", sysevent.DefaultLogFileName),
 	}
 
 	fs := flag.NewFlagSet("gateway", flag.ContinueOnError)
@@ -96,6 +101,7 @@ func loadConfigWithOutput(args []string, helpOutput io.Writer) (Config, error) {
 	fs.StringVar(&cfg.RouterDir, "router-dir", cfg.RouterDir, "directory containing router.hcl")
 	fs.StringVar(&cfg.PlaybooksDir, "playbooks-dir", cfg.PlaybooksDir, "directory containing playbook .md files (default <cwd>/.playbooks)")
 	fs.StringVar(&cfg.KanbanBoardID, "kanban-board-id", cfg.KanbanBoardID, "Trello board id whose lists the kanban {} block in router.hcl is resolved against")
+	fs.StringVar(&cfg.LogFile, "log-file", cfg.LogFile, "operator log file path")
 
 	if err := fs.Parse(args[1:]); err != nil {
 		return Config{}, err
@@ -173,6 +179,9 @@ func validateConfig(cfg Config) error {
 	if cfg.KanbanBoardID == "" {
 		return errors.New("missing kanban board id, set --kanban-board-id or TRELLO_KANBAN_BOARD_ID")
 	}
+	if cfg.LogFile == "" {
+		return errors.New("missing log file, set --log-file or LOG_FILE")
+	}
 	info, err := os.Stat(cfg.PlaybooksDir)
 	if err != nil {
 		return fmt.Errorf("playbooks-dir %q invalid: %w", cfg.PlaybooksDir, err)
@@ -200,8 +209,8 @@ func envOrDefault(key, fallback string) string {
 }
 
 func (c Config) Redacted() string {
-	return fmt.Sprintf("listen=%s callback_url=%s tunnel=%s copilot_model=%s router_dir=%s playbooks_dir=%s kanban_board_id=%s trello_api_secret=%s trello_api_key=%s trello_api_token=%s",
-		c.ListenAddr, c.CallbackURL, c.Tunnel, c.CopilotModel, c.RouterDir, c.PlaybooksDir, c.KanbanBoardID,
+	return fmt.Sprintf("listen=%s callback_url=%s tunnel=%s copilot_model=%s router_dir=%s playbooks_dir=%s kanban_board_id=%s log_file=%s trello_api_secret=%s trello_api_key=%s trello_api_token=%s",
+		c.ListenAddr, c.CallbackURL, c.Tunnel, c.CopilotModel, c.RouterDir, c.PlaybooksDir, c.KanbanBoardID, c.LogFile,
 		redact(c.TrelloSecret), redact(c.TrelloAPIKey), redact(c.TrelloAPIToken))
 }
 

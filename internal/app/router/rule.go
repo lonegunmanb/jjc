@@ -3,7 +3,6 @@ package router
 import (
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"github.com/zclconf/go-cty/cty/function"
 
 	"github.com/lonegunmanb/jjc/internal/app/kanban"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
 // RuleConfig is the decoded `rule {}` side of router.hcl.
@@ -50,7 +50,7 @@ type RuleMatch struct {
 // RuleEngine evaluates configured `rule {}` blocks top-down.
 type RuleEngine struct {
 	rules  []RuleBlock
-	logger *log.Logger
+	logger sysevent.Sink
 	funcs  map[string]function.Function
 	kanban cty.Value
 }
@@ -136,9 +136,9 @@ func DecodeRuleConfig(src []byte, filename, playbooksDir string) (RuleConfig, er
 
 // NewRuleEngine builds a rule engine. routerDir is passed to hclfuncs for
 // standard function setup; github_issue is registered project-locally here.
-func NewRuleEngine(cfg RuleConfig, routerDir string, view *kanban.Resolved, logger *log.Logger) *RuleEngine {
+func NewRuleEngine(cfg RuleConfig, routerDir string, view *kanban.Resolved, logger sysevent.Sink) *RuleEngine {
 	if logger == nil {
-		logger = log.Default()
+		logger = sysevent.Default()
 	}
 	funcs := hclfuncs.Functions(routerDir)
 	funcs["github_issue"] = githubIssueFunc
@@ -164,11 +164,11 @@ func (e *RuleEngine) Match(card CardSignals) (RuleMatch, bool) {
 	for _, r := range e.rules {
 		v, diags := r.When.Value(ctx)
 		if diags.HasErrors() {
-			e.logger.Printf("event=rule_when_eval_error rule=%q diag=%q", r.Name, diags.Error())
+			sysevent.Emitf(e.logger, "rule_when_eval_error", "rule=%q diag=%q", r.Name, diags.Error())
 			continue
 		}
 		if v.IsNull() || !v.Type().Equals(cty.Bool) {
-			e.logger.Printf("event=rule_when_type_error rule=%q diag=%q",
+			sysevent.Emitf(e.logger, "rule_when_type_error", "rule=%q diag=%q",
 				r.Name, "when expression did not evaluate to bool")
 			continue
 		}
@@ -180,7 +180,7 @@ func (e *RuleEngine) Match(card CardSignals) (RuleMatch, bool) {
 		}
 	}
 
-	e.logger.Printf("event=rule_no_match card_id=%q", card.ID)
+	sysevent.Emitf(e.logger, "rule_no_match", "card_id=%q", card.ID)
 	return RuleMatch{}, false
 }
 

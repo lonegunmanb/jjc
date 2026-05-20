@@ -21,7 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -113,7 +113,7 @@ type Service struct {
 	osName        string
 	home          func() (string, error)
 	tempDirRoot   string // when "" os.MkdirTemp uses the OS default
-	logger        *log.Logger
+	logger        sysevent.Sink
 
 	// mu serialises Refresh calls. The bootstrap step copies the
 	// installer into the shared per-user directory
@@ -130,8 +130,8 @@ type Service struct {
 // Option tunes a Service constructed via New.
 type Option func(*Service)
 
-// WithLogger overrides the default log.Default() destination.
-func WithLogger(l *log.Logger) Option {
+// WithLogger overrides the default sysevent.Default() destination.
+func WithLogger(l sysevent.Sink) Option {
 	return func(s *Service) {
 		if l != nil {
 			s.logger = l
@@ -157,7 +157,7 @@ func New(opts ...Option) *Service {
 		runner:        execCommandRunner,
 		osName:        runtime.GOOS,
 		home:          os.UserHomeDir,
-		logger:        log.Default(),
+		logger:        sysevent.Default(),
 	}
 	for _, o := range opts {
 		o(s)
@@ -204,14 +204,14 @@ func (s *Service) Refresh(ctx context.Context, opts Options) error {
 		}
 		if branch == "main" {
 			target := "issue-" + opts.Issue
-			logger.Printf("event=aiassistedrefresh_branch_create repo=%s branch=%s",
+			sysevent.Emitf(logger, "aiassistedrefresh_branch_create", "repo=%s branch=%s",
 				opts.RepoDirectory, target)
 			if out, err := s.runner(ctx, "git", "-C", opts.RepoDirectory, "checkout", "-b", target); err != nil {
 				return fmt.Errorf("aiassistedrefresh: git checkout -b %s in %s: %w (output: %s)",
 					target, opts.RepoDirectory, err, strings.TrimSpace(string(out)))
 			}
 		} else {
-			logger.Printf("event=aiassistedrefresh_branch_skip repo=%s current=%s reason=not_on_main",
+			sysevent.Emitf(logger, "aiassistedrefresh_branch_skip", "repo=%s current=%s reason=not_on_main",
 				opts.RepoDirectory, branch)
 		}
 	}
@@ -223,11 +223,11 @@ func (s *Service) Refresh(ctx context.Context, opts Options) error {
 	}
 	defer func() {
 		if rmErr := os.RemoveAll(tempDir); rmErr != nil {
-			logger.Printf("event=aiassistedrefresh_tempdir_cleanup_failed dir=%s err=%v",
+			sysevent.Emitf(logger, "aiassistedrefresh_tempdir_cleanup_failed", "dir=%s err=%v",
 				tempDir, rmErr)
 		}
 	}()
-	logger.Printf("event=aiassistedrefresh_clone_started src=%s dir=%s",
+	sysevent.Emitf(logger, "aiassistedrefresh_clone_started", "src=%s dir=%s",
 		s.sourceRepoURL, tempDir)
 	if out, err := s.runner(ctx, "git", "clone", "--depth", "1", s.sourceRepoURL, tempDir); err != nil {
 		return fmt.Errorf("aiassistedrefresh: git clone %s: %w (output: %s)",
@@ -241,7 +241,7 @@ func (s *Service) Refresh(ctx context.Context, opts Options) error {
 		return err
 	}
 
-	logger.Printf("event=aiassistedrefresh_bootstrap_started os=%s installer=%s",
+	sysevent.Emitf(logger, "aiassistedrefresh_bootstrap_started", "os=%s installer=%s",
 		s.osName, dispatcher.bootstrapScript)
 	if out, err := s.runner(ctx, dispatcher.command, dispatcher.bootstrapArgs()...); err != nil {
 		return fmt.Errorf("aiassistedrefresh: bootstrap installer (%s): %w (output: %s)",
@@ -254,7 +254,7 @@ func (s *Service) Refresh(ctx context.Context, opts Options) error {
 	}
 	bootstrapped := dispatcher.bootstrappedScript(homeDir)
 
-	logger.Printf("event=aiassistedrefresh_clean_started repo=%s installer=%s",
+	sysevent.Emitf(logger, "aiassistedrefresh_clean_started", "repo=%s installer=%s",
 		opts.RepoDirectory, bootstrapped)
 	if out, err := s.runner(ctx, dispatcher.command, dispatcher.cleanArgs(bootstrapped, opts.RepoDirectory)...); err != nil {
 		return fmt.Errorf("aiassistedrefresh: clean repo %s: %w (output: %s)",
@@ -262,18 +262,18 @@ func (s *Service) Refresh(ctx context.Context, opts Options) error {
 	}
 
 	if opts.Clean {
-		logger.Printf("event=aiassistedrefresh_install_skipped reason=clean_only_requested repo=%s",
+		sysevent.Emitf(logger, "aiassistedrefresh_install_skipped", "reason=clean_only_requested repo=%s",
 			opts.RepoDirectory)
 		return nil
 	}
 
-	logger.Printf("event=aiassistedrefresh_install_started repo=%s installer=%s",
+	sysevent.Emitf(logger, "aiassistedrefresh_install_started", "repo=%s installer=%s",
 		opts.RepoDirectory, bootstrapped)
 	if out, err := s.runner(ctx, dispatcher.command, dispatcher.installArgs(bootstrapped, opts.RepoDirectory)...); err != nil {
 		return fmt.Errorf("aiassistedrefresh: install into %s: %w (output: %s)",
 			opts.RepoDirectory, err, strings.TrimSpace(string(out)))
 	}
-	logger.Printf("event=aiassistedrefresh_done repo=%s clean_only=%t",
+	sysevent.Emitf(logger, "aiassistedrefresh_done", "repo=%s clean_only=%t",
 		opts.RepoDirectory, opts.Clean)
 	return nil
 }

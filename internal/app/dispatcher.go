@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"sort"
 	"strings"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/lonegunmanb/jjc/internal/app/kanban"
 	"github.com/lonegunmanb/jjc/internal/app/router"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
 // WorkerSession is the subset of *copilot.Session that the dispatcher
@@ -89,7 +89,7 @@ const DefaultIdleTimeout = 24 * time.Hour
 // drains an inbox channel: this guarantees same-card events are delivered
 // strictly in order while different cards are processed in parallel.
 type Dispatcher struct {
-	logger  *log.Logger
+	logger  sysevent.Sink
 	factory SessionFactory
 	// inboxBuf is the per-card inbox channel buffer size. Bounded so a
 	// runaway worker cannot accumulate unbounded backlog; events past the
@@ -130,9 +130,9 @@ type Dispatcher struct {
 
 // NewDispatcher returns a Dispatcher ready to accept events. factory is
 // called the first time an event for a card needs to be dispatched.
-func NewDispatcher(logger *log.Logger, factory SessionFactory) *Dispatcher {
+func NewDispatcher(logger sysevent.Sink, factory SessionFactory) *Dispatcher {
 	if logger == nil {
-		logger = log.Default()
+		logger = sysevent.Default()
 	}
 	return &Dispatcher{
 		logger:      logger,
@@ -287,7 +287,7 @@ func routeActionFromDo(do string) RouteAction {
 // processing it. This is what lets us reply 202 to Trello immediately.
 func (d *Dispatcher) Dispatch(ctx context.Context, eventID string, rawBody []byte) error {
 	decision := d.evaluateRoute(rawBody)
-	d.logger.Printf("event=route_decided event_id=%s action=%s card_id=%s list_after=%q reason=%s",
+	sysevent.Emitf(d.logger, "route_decided", "event_id=%s action=%s card_id=%s list_after=%q reason=%s",
 		eventID, decision.Action, decision.CardID, decision.ListAfter, decision.Reason)
 	d.recordGlobal(decision.CardID, decision.Action.String(), decision.ListAfter+" "+decision.Reason)
 
@@ -309,7 +309,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, eventID string, rawBody []byt
 		_, ok := d.workers[decision.CardID]
 		d.mu.Unlock()
 		if !ok {
-			d.logger.Printf("event=departure_no_worker event_id=%s card_id=%s list_after=%q",
+			sysevent.Emitf(d.logger, "departure_no_worker", "event_id=%s card_id=%s list_after=%q",
 				eventID, decision.CardID, decision.ListAfter)
 			return nil
 		}
@@ -325,7 +325,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, eventID string, rawBody []byt
 		_, ok := d.workers[decision.CardID]
 		d.mu.Unlock()
 		if !ok {
-			d.logger.Printf("event=terminate_no_worker event_id=%s card_id=%s reason=%s",
+			sysevent.Emitf(d.logger, "terminate_no_worker", "event_id=%s card_id=%s reason=%s",
 				eventID, decision.CardID, decision.Reason)
 			return nil
 		}
@@ -362,14 +362,14 @@ func (d *Dispatcher) enqueue(ctx context.Context, cardID string, msg dispatchMes
 		}
 		d.workers[cardID] = handle
 		go d.runWorker(handle)
-		d.logger.Printf("event=worker_registered card_id=%s", cardID)
+		sysevent.Emitf(d.logger, "worker_registered", "card_id=%s", cardID)
 		d.recordGlobal(cardID, "worker_registered", "")
 	}
 	d.mu.Unlock()
 
 	select {
 	case handle.inbox <- msg:
-		d.logger.Printf("event=worker_enqueued card_id=%s event_id=%s kind=%d", cardID, msg.eventID, msg.kind)
+		sysevent.Emitf(d.logger, "worker_enqueued", "card_id=%s event_id=%s kind=%d", cardID, msg.eventID, msg.kind)
 		return nil
 	case <-handle.kill:
 		return ErrWorkerDeleted
@@ -388,7 +388,7 @@ func (d *Dispatcher) runWorker(handle *workerHandle) {
 	// shut down; runs after MarkDisconnected has appended its final entry.
 	defer func() {
 		if err := handle.tracker.Close(); err != nil {
-			d.logger.Printf("event=activity_log_remove_error card_id=%s err=%v", handle.cardID, err)
+			sysevent.Emitf(d.logger, "activity_log_remove_error", "card_id=%s err=%v", handle.cardID, err)
 		}
 	}()
 
@@ -396,9 +396,9 @@ func (d *Dispatcher) runWorker(handle *workerHandle) {
 	defer func() {
 		if session != nil {
 			if err := session.Disconnect(); err != nil {
-				d.logger.Printf("event=worker_disconnect_error card_id=%s err=%v", handle.cardID, err)
+				sysevent.Emitf(d.logger, "worker_disconnect_error", "card_id=%s err=%v", handle.cardID, err)
 			} else {
-				d.logger.Printf("event=worker_disconnected card_id=%s", handle.cardID)
+				sysevent.Emitf(d.logger, "worker_disconnected", "card_id=%s", handle.cardID)
 			}
 		}
 		handle.tracker.MarkDisconnected()
@@ -419,11 +419,11 @@ func (d *Dispatcher) runWorker(handle *workerHandle) {
 				timer.Stop()
 				return
 			case <-timer.C:
-				d.logger.Printf("event=worker_session_idle_reaped card_id=%s timeout=%s",
+				sysevent.Emitf(d.logger, "worker_session_idle_reaped", "card_id=%s timeout=%s",
 					handle.cardID, d.idleTimeout)
 				d.recordGlobal(handle.cardID, "session_reaped", "idle timeout")
 				if err := session.Disconnect(); err != nil {
-					d.logger.Printf("event=worker_idle_disconnect_error card_id=%s err=%v",
+					sysevent.Emitf(d.logger, "worker_idle_disconnect_error", "card_id=%s err=%v",
 						handle.cardID, err)
 				}
 				session = nil
@@ -443,10 +443,10 @@ func (d *Dispatcher) runWorker(handle *workerHandle) {
 		}
 
 		if session == nil {
-			d.logger.Printf("event=worker_session_creating card_id=%s event_id=%s", handle.cardID, msg.eventID)
+			sysevent.Emitf(d.logger, "worker_session_creating", "card_id=%s event_id=%s", handle.cardID, msg.eventID)
 			created, err := d.factory.NewWorkerSession(context.Background(), handle.cardID, handle.tracker)
 			if err != nil {
-				d.logger.Printf("event=worker_session_create_error card_id=%s event_id=%s err=%v",
+				sysevent.Emitf(d.logger, "worker_session_create_error", "card_id=%s event_id=%s err=%v",
 					handle.cardID, msg.eventID, err)
 				// Surface the failure to the TUI/REPL global log so an
 				// operator notices something went wrong (the worker
@@ -464,14 +464,14 @@ func (d *Dispatcher) runWorker(handle *workerHandle) {
 				return
 			}
 			session = created
-			d.logger.Printf("event=worker_session_created card_id=%s event_id=%s", handle.cardID, msg.eventID)
+			sysevent.Emitf(d.logger, "worker_session_created", "card_id=%s event_id=%s", handle.cardID, msg.eventID)
 		}
 
 		started := time.Now()
-		d.logger.Printf("event=worker_send_start card_id=%s event_id=%s kind=%d prompt_bytes=%d",
+		sysevent.Emitf(d.logger, "worker_send_start", "card_id=%s event_id=%s kind=%d prompt_bytes=%d",
 			handle.cardID, msg.eventID, msg.kind, len(msg.prompt))
 		if err := session.SendAndWait(handle.ctx, msg.prompt); err != nil {
-			d.logger.Printf("event=worker_send_error card_id=%s event_id=%s err=%v",
+			sysevent.Emitf(d.logger, "worker_send_error", "card_id=%s event_id=%s err=%v",
 				handle.cardID, msg.eventID, err)
 			// If the worker was killed mid-send, exit instead of looping
 			// fast on ctx errors.
@@ -483,11 +483,11 @@ func (d *Dispatcher) runWorker(handle *workerHandle) {
 			// repeated send errors in the logs.
 			continue
 		}
-		d.logger.Printf("event=worker_send_done card_id=%s event_id=%s duration=%s",
+		sysevent.Emitf(d.logger, "worker_send_done", "card_id=%s event_id=%s duration=%s",
 			handle.cardID, msg.eventID, time.Since(started))
 
 		if msg.kind == kindTerminate {
-			d.logger.Printf("event=worker_terminating card_id=%s event_id=%s", handle.cardID, msg.eventID)
+			sysevent.Emitf(d.logger, "worker_terminating", "card_id=%s event_id=%s", handle.cardID, msg.eventID)
 			d.recordGlobal(handle.cardID, "worker_terminating", msg.eventID)
 			return
 		}
@@ -500,7 +500,7 @@ func (d *Dispatcher) deregister(cardID string) {
 	d.mu.Lock()
 	delete(d.workers, cardID)
 	d.mu.Unlock()
-	d.logger.Printf("event=worker_deregistered card_id=%s", cardID)
+	sysevent.Emitf(d.logger, "worker_deregistered", "card_id=%s", cardID)
 	d.recordGlobal(cardID, "worker_deregistered", "")
 }
 
@@ -539,7 +539,7 @@ func (d *Dispatcher) Stop() {
 	for _, h := range handles {
 		<-h.done
 	}
-	d.logger.Printf("event=dispatcher_stopped workers=%d", len(handles))
+	sysevent.Emitf(d.logger, "dispatcher_stopped", "workers=%d", len(handles))
 }
 
 // DeleteWorker forcibly tears down the worker for cardID and removes the
@@ -581,18 +581,18 @@ func (d *Dispatcher) DeleteWorker(cardID string) (string, error) {
 	h.cancel()
 	<-h.done
 
-	d.logger.Printf("event=worker_deleted card_id=%s work_dir=%q", cardID, workDir)
+	sysevent.Emitf(d.logger, "worker_deleted", "card_id=%s work_dir=%q", cardID, workDir)
 	d.recordGlobal(cardID, "worker_deleted", workDir)
 
 	if workDir == "" {
 		return "", nil
 	}
 	if err := os.RemoveAll(workDir); err != nil {
-		d.logger.Printf("event=worker_workdir_remove_error card_id=%s work_dir=%q err=%v",
+		sysevent.Emitf(d.logger, "worker_workdir_remove_error", "card_id=%s work_dir=%q err=%v",
 			cardID, workDir, err)
 		return workDir, fmt.Errorf("remove work_dir %s: %w", workDir, err)
 	}
-	d.logger.Printf("event=worker_workdir_removed card_id=%s work_dir=%q", cardID, workDir)
+	sysevent.Emitf(d.logger, "worker_workdir_removed", "card_id=%s work_dir=%q", cardID, workDir)
 	return workDir, nil
 }
 
@@ -655,7 +655,7 @@ func assembleTerminateNotice(rawBody, slimBody []byte, reason string) string {
 // the prompt and blocking on a SessionIdleData event.
 type copilotWorkerSession struct {
 	session *copilot.Session
-	logger  *log.Logger
+	logger  sysevent.Sink
 	cardID  string
 	tracker *ActivityTracker
 }

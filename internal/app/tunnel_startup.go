@@ -3,10 +3,10 @@ package app
 import (
 	"context"
 	"errors"
-	"log"
 	"net/http"
 	"sync"
 
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"github.com/lonegunmanb/jjc/internal/app/trelloclient"
 	"github.com/lonegunmanb/jjc/internal/app/tunnel"
 )
@@ -37,9 +37,9 @@ func (h *switchableHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	next.ServeHTTP(w, r)
 }
 
-func NewValidationHandler(logger *log.Logger) http.Handler {
+func NewValidationHandler(logger sysevent.Sink) http.Handler {
 	if logger == nil {
-		logger = log.Default()
+		logger = sysevent.Default()
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -52,37 +52,73 @@ func NewValidationHandler(logger *log.Logger) http.Handler {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		logger.Printf("event=trello_validation method=HEAD remote=%s ua=%q", r.RemoteAddr, r.UserAgent())
+		sysevent.Emitf(logger, "trello_validation", "method=HEAD remote=%s ua=%q", r.RemoteAddr, r.UserAgent())
 		w.WriteHeader(http.StatusOK)
 	})
 	return mux
 }
 
-func StartTunnelAndReconcile(ctx context.Context, cfg *Config, provider tunnel.Provider, trelloClient trelloclient.Client, localAddr string, logger *log.Logger) (string, error) {
+func StartTunnelAndReconcile(ctx context.Context, cfg *Config, provider tunnel.Provider, trelloClient trelloclient.Client, localAddr string, logger sysevent.Sink) (string, error) {
+	id, _, err := StartTunnelAndReconcileWithOwnership(ctx, cfg, provider, trelloClient, localAddr, logger)
+	return id, err
+}
+
+// StartTunnelAndReconcileWithOwnership is the full-fidelity variant of
+// StartTunnelAndReconcile. It additionally reports whether this call
+// CREATED the webhook (vs. updating one that already existed). main.go
+// uses the flag to decide whether to clean the webhook up on shutdown:
+// gateway-owned webhooks get deleted so a TryCloudflare URL that just
+// died doesn't keep a dangling webhook on Trello; pre-existing
+// out-of-band webhooks (e.g. operator-managed for a stable DNS-backed
+// callback) are left alone.
+func StartTunnelAndReconcileWithOwnership(ctx context.Context, cfg *Config, provider tunnel.Provider, trelloClient trelloclient.Client, localAddr string, logger sysevent.Sink) (string, bool, error) {
 	if cfg == nil {
-		return "", errors.New("config is nil")
+		return "", false, errors.New("config is nil")
 	}
 	if cfg.Tunnel == tunnel.None {
-		return "", nil
+		return "", false, nil
 	}
 	if provider == nil {
-		return "", errors.New("tunnel provider is nil")
+		return "", false, errors.New("tunnel provider is nil")
 	}
 	if trelloClient == nil {
-		return "", errors.New("trello client is nil")
+		return "", false, errors.New("trello client is nil")
 	}
 	publicURL, err := provider.Start(ctx, localAddr)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	webhookID, err := trelloclient.ReconcileBoardWebhook(ctx, trelloClient, cfg.TrelloAPIToken, cfg.KanbanBoardID, publicURL)
+	webhookID, createdNow, err := trelloclient.ReconcileBoardWebhook(ctx, trelloClient, cfg.TrelloAPIToken, cfg.KanbanBoardID, publicURL)
 	if err != nil {
 		_ = provider.Stop()
-		return "", err
+		return "", false, err
 	}
 	cfg.CallbackURL = publicURL
 	if logger != nil {
-		logger.Printf("event=trello_webhook_reconciled provider=%s board_id=%s webhook_id=%s callback_url=%s", provider.Name(), cfg.KanbanBoardID, webhookID, publicURL)
+		sysevent.Emitf(logger, "trello_webhook_reconciled", "provider=%s board_id=%s webhook_id=%s callback_url=%s created_now=%t", provider.Name(), cfg.KanbanBoardID, webhookID, publicURL, createdNow)
 	}
-	return webhookID, nil
+	return webhookID, createdNow, nil
+}
+
+// DeleteGatewayCreatedWebhook removes a webhook this process previously
+// created via StartTunnelAndReconcileWithOwnership. Safe to call from
+// main's defer chain: a nil/empty webhookID, or createdNow==false, is
+// a no-op so the caller does not need a branch.
+//
+// A 404 from Trello (webhook already gone) is treated as success by
+// trelloclient.Client.DeleteWebhook, so this helper is idempotent.
+func DeleteGatewayCreatedWebhook(ctx context.Context, cfg *Config, trelloClient trelloclient.Client, webhookID string, createdNow bool, logger sysevent.Sink) error {
+	if !createdNow || webhookID == "" || trelloClient == nil || cfg == nil {
+		return nil
+	}
+	if err := trelloClient.DeleteWebhook(ctx, cfg.TrelloAPIToken, webhookID); err != nil {
+		if logger != nil {
+			sysevent.Emitf(logger, "trello_webhook_delete_failed", "board_id=%s webhook_id=%s err=%v", cfg.KanbanBoardID, webhookID, err)
+		}
+		return err
+	}
+	if logger != nil {
+		sysevent.Emitf(logger, "trello_webhook_deleted", "board_id=%s webhook_id=%s", cfg.KanbanBoardID, webhookID)
+	}
+	return nil
 }
