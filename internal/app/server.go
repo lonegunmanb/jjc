@@ -6,11 +6,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
 // MaxWebhookBodyBytes caps the request body the gateway is willing to
@@ -36,13 +36,13 @@ const MaxDispatchDuration = 30 * time.Minute
 // run forever on context.Background. A nil dispatchCtx is upgraded to
 // context.Background for backward compatibility with tests that don't
 // care about cancellation.
-func NewRouter(dispatchCtx context.Context, cfg Config, runner *CopilotRunner, logger *log.Logger) *gin.Engine {
+func NewRouter(dispatchCtx context.Context, cfg Config, runner *CopilotRunner, logger sysevent.Sink) *gin.Engine {
 	return NewRouterWithRunner(dispatchCtx, cfg, runner, logger)
 }
 
 // NewRouterWithRunner exposes the runner dependency for tests so that the
 // copilot CLI invocation can be stubbed out.
-func NewRouterWithRunner(dispatchCtx context.Context, cfg Config, runner *CopilotRunner, logger *log.Logger) *gin.Engine {
+func NewRouterWithRunner(dispatchCtx context.Context, cfg Config, runner *CopilotRunner, logger sysevent.Sink) *gin.Engine {
 	if dispatchCtx == nil {
 		dispatchCtx = context.Background()
 	}
@@ -51,12 +51,12 @@ func NewRouterWithRunner(dispatchCtx context.Context, cfg Config, runner *Copilo
 	r.Use(gin.Recovery())
 	r.HandleMethodNotAllowed = true
 	r.NoMethod(func(c *gin.Context) {
-		logger.Printf("event=method_not_allowed method=%s path=%s remote=%s", c.Request.Method, c.Request.URL.Path, c.ClientIP())
+		sysevent.Emitf(logger, "method_not_allowed", "method=%s path=%s remote=%s", c.Request.Method, c.Request.URL.Path, c.ClientIP())
 		c.Status(http.StatusMethodNotAllowed)
 	})
 
 	r.HEAD("/", func(c *gin.Context) {
-		logger.Printf("event=trello_validation method=HEAD remote=%s ua=%q", c.ClientIP(), c.Request.UserAgent())
+		sysevent.Emitf(logger, "trello_validation", "method=HEAD remote=%s ua=%q", c.ClientIP(), c.Request.UserAgent())
 		c.Status(http.StatusOK)
 	})
 
@@ -64,14 +64,14 @@ func NewRouterWithRunner(dispatchCtx context.Context, cfg Config, runner *Copilo
 		eventID := newEventID()
 		remote := c.ClientIP()
 		ua := c.Request.UserAgent()
-		logger.Printf("event=trello_event_received event_id=%s remote=%s ua=%q content_length=%d", eventID, remote, ua, c.Request.ContentLength)
+		sysevent.Emitf(logger, "trello_event_received", "event_id=%s remote=%s ua=%q content_length=%d", eventID, remote, ua, c.Request.ContentLength)
 
 		// Cheap pre-check on the advertised Content-Length so we don't
 		// even start reading bodies that are obviously too large. -1
 		// (unknown) and 0 are both fine here; the streaming guard below
 		// catches actually-too-large bodies whose CL was missing or lied.
 		if c.Request.ContentLength > MaxWebhookBodyBytes {
-			logger.Printf("event=trello_body_too_large event_id=%s remote=%s content_length=%d limit=%d",
+			sysevent.Emitf(logger, "trello_body_too_large", "event_id=%s remote=%s content_length=%d limit=%d",
 				eventID, remote, c.Request.ContentLength, MaxWebhookBodyBytes)
 			c.Status(http.StatusRequestEntityTooLarge)
 			return
@@ -84,28 +84,28 @@ func NewRouterWithRunner(dispatchCtx context.Context, cfg Config, runner *Copilo
 		if err != nil {
 			var mbErr *http.MaxBytesError
 			if errors.As(err, &mbErr) {
-				logger.Printf("event=trello_body_too_large event_id=%s remote=%s limit=%d",
+				sysevent.Emitf(logger, "trello_body_too_large", "event_id=%s remote=%s limit=%d",
 					eventID, remote, MaxWebhookBodyBytes)
 				c.Status(http.StatusRequestEntityTooLarge)
 				return
 			}
-			logger.Printf("event=trello_body_read_error event_id=%s err=%v", eventID, err)
+			sysevent.Emitf(logger, "trello_body_read_error", "event_id=%s err=%v", eventID, err)
 			c.Status(http.StatusBadRequest)
 			return
 		}
-		logger.Printf("event=trello_body_read event_id=%s body_bytes=%d", eventID, len(raw))
+		sysevent.Emitf(logger, "trello_body_read", "event_id=%s body_bytes=%d", eventID, len(raw))
 
 		headerSig := c.GetHeader("X-Trello-Webhook")
 		ok := VerifySignature(cfg.TrelloSecret, raw, cfg.CallbackURL, headerSig)
 		if !ok {
-			logger.Printf("event=signature_invalid event_id=%s remote=%s", eventID, remote)
+			sysevent.Emitf(logger, "signature_invalid", "event_id=%s remote=%s", eventID, remote)
 			c.Status(http.StatusForbidden)
 			return
 		}
-		logger.Printf("event=signature_valid event_id=%s", eventID)
+		sysevent.Emitf(logger, "signature_valid", "event_id=%s", eventID)
 
 		summary := BuildLogSummary(raw)
-		logger.Printf("event=trello_summary event_id=%s summary=%q", eventID, summary)
+		sysevent.Emitf(logger, "trello_summary", "event_id=%s summary=%q", eventID, summary)
 
 		// Trello requires a 2xx within ~30s or it will retry the webhook,
 		// causing duplicate events. Manager dispatch can take much longer
@@ -114,7 +114,7 @@ func NewRouterWithRunner(dispatchCtx context.Context, cfg Config, runner *Copilo
 		// dispatch goroutine inherits dispatchCtx (tied to gateway
 		// shutdown) and is further bounded by MaxDispatchDuration so a
 		// stuck dispatch cannot leak under sustained webhook traffic.
-		logger.Printf("event=copilot_dispatch_start event_id=%s model=%s", eventID, runner.Model())
+		sysevent.Emitf(logger, "copilot_dispatch_start", "event_id=%s model=%s", eventID, runner.Model())
 		c.Status(http.StatusAccepted)
 
 		go func(eventID string, raw []byte) {
@@ -122,10 +122,10 @@ func NewRouterWithRunner(dispatchCtx context.Context, cfg Config, runner *Copilo
 			defer cancel()
 			promptPath, err := runner.Handle(ctx, eventID, raw)
 			if err != nil {
-				logger.Printf("event=copilot_dispatch_error event_id=%s prompt_file=%s err=%v", eventID, promptPath, err)
+				sysevent.Emitf(logger, "copilot_dispatch_error", "event_id=%s prompt_file=%s err=%v", eventID, promptPath, err)
 				return
 			}
-			logger.Printf("event=copilot_dispatched event_id=%s prompt_file=%s", eventID, promptPath)
+			sysevent.Emitf(logger, "copilot_dispatched", "event_id=%s prompt_file=%s", eventID, promptPath)
 		}(eventID, raw)
 	})
 

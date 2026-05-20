@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
 // newTestServer wires a test client around an httptest.Server. Returns
@@ -24,7 +26,7 @@ func newTestServer(t *testing.T, handler http.HandlerFunc) (Client, *httptest.Se
 	c, err := New(
 		WithCredentials("k", "tok"),
 		WithServer(srv.URL),
-		WithLogger(log.New(io.Discard, "", 0)),
+		WithLogger(sysevent.FromLogger(log.New(io.Discard, "", 0))),
 	)
 	if err != nil {
 		srv.Close()

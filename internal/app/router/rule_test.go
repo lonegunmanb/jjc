@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"github.com/zclconf/go-cty/cty"
 )
 
@@ -100,7 +101,7 @@ func newSampleRuleEngine(t *testing.T) (*RuleEngine, *bytes.Buffer) {
 		t.Fatalf("DecodeRuleConfig: %v", err)
 	}
 	var buf bytes.Buffer
-	return NewRuleEngine(cfg, "", sampleView(), log.New(&buf, "", 0)), &buf
+	return NewRuleEngine(cfg, "", sampleView(), sysevent.FromLogger(log.New(&buf, "", 0))), &buf
 }
 
 func TestGitHubIssueFunc(t *testing.T) {
@@ -209,7 +210,7 @@ rule "good" {
 		t.Fatalf("DecodeRuleConfig: %v", err)
 	}
 	var buf bytes.Buffer
-	got, ok := NewRuleEngine(cfg, "", nil, log.New(&buf, "", 0)).Match(CardSignals{ID: "c1"})
+	got, ok := NewRuleEngine(cfg, "", nil, sysevent.FromLogger(log.New(&buf, "", 0))).Match(CardSignals{ID: "c1"})
 	if !ok || got.RuleName != "good" {
 		t.Fatalf("expected good rule after skipped errors, got %+v ok=%v", got, ok)
 	}
@@ -232,7 +233,7 @@ rule "nope" {
 		t.Fatalf("DecodeRuleConfig: %v", err)
 	}
 	var buf bytes.Buffer
-	_, ok := NewRuleEngine(cfg, "", nil, log.New(&buf, "", 0)).Match(CardSignals{ID: "c42"})
+	_, ok := NewRuleEngine(cfg, "", nil, sysevent.FromLogger(log.New(&buf, "", 0))).Match(CardSignals{ID: "c42"})
 	if ok {
 		t.Fatal("expected no match")
 	}

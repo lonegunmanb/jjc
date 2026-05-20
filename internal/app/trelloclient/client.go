@@ -25,13 +25,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	trellosdk "github.com/lonegunmanb/go-trello-sdk/trello"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
 // Card is the trimmed-down view of a Trello card surface the gateway
@@ -127,7 +127,7 @@ type config struct {
 	apiToken string
 	server   string
 	httpDoer trellosdk.HttpRequestDoer
-	logger   *log.Logger
+	logger   sysevent.Sink
 }
 
 // WithCredentials supplies the API key/token Trello requires. Required.
@@ -165,8 +165,8 @@ func WithHTTPClient(doer trellosdk.HttpRequestDoer) Option {
 }
 
 // WithLogger installs the logger used for non-fatal warnings.
-// Defaults to log.Default().
-func WithLogger(logger *log.Logger) Option {
+// Defaults to sysevent.Default().
+func WithLogger(logger sysevent.Sink) Option {
 	return func(c *config) error {
 		if logger != nil {
 			c.logger = logger
@@ -182,7 +182,7 @@ func WithLogger(logger *log.Logger) Option {
 // misconfigured production deployment fails fast at startup instead of
 // silently issuing unauthenticated GETs against api.trello.com.
 func New(opts ...Option) (Client, error) {
-	cfg := &config{logger: log.Default()}
+	cfg := &config{logger: sysevent.Default()}
 	for _, opt := range opts {
 		if err := opt(cfg); err != nil {
 			return nil, err
@@ -212,7 +212,7 @@ func New(opts ...Option) (Client, error) {
 // behaviour stays in one place.
 type sdkBackedClient struct {
 	sdk    *trellosdk.ClientWithResponses
-	logger *log.Logger
+	logger sysevent.Sink
 }
 
 func (c *sdkBackedClient) GetCard(ctx context.Context, cardID string) (Card, error) {
@@ -555,7 +555,7 @@ func (c *sdkBackedClient) fetchCommentActions(ctx context.Context, cardID string
 			if derr != nil {
 				// Skip malformed actions but keep going so a single bad row
 				// doesn't blank the whole page.
-				c.logger.Printf("event=trelloclient_action_decode_error card_id=%s err=%v", cardID, derr)
+				sysevent.Emitf(c.logger, "trelloclient_action_decode_error", "card_id=%s err=%v", cardID, derr)
 				continue
 			}
 			out = append(out, comment)
@@ -565,7 +565,7 @@ func (c *sdkBackedClient) fetchCommentActions(ctx context.Context, cardID string
 			return out, nil
 		}
 		if len(out) >= commentsHardCap {
-			c.logger.Printf("event=trelloclient_comments_truncated card_id=%s returned=%d hard_cap=%d hint=increase commentsHardCap or filter with since=",
+			sysevent.Emitf(c.logger, "trelloclient_comments_truncated", "card_id=%s returned=%d hard_cap=%d hint=increase commentsHardCap or filter with since=",
 				cardID, len(out), commentsHardCap)
 			return out, nil
 		}
@@ -577,7 +577,7 @@ func (c *sdkBackedClient) fetchCommentActions(ctx context.Context, cardID string
 		if lastID == "" {
 			// Every action on the page failed to decode; we can't advance
 			// the cursor. Bail rather than loop forever.
-			c.logger.Printf("event=trelloclient_comments_pagination_stalled card_id=%s", cardID)
+			sysevent.Emitf(c.logger, "trelloclient_comments_pagination_stalled", "card_id=%s", cardID)
 			return out, nil
 		}
 		before = lastID

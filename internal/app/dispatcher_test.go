@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"log"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lonegunmanb/jjc/internal/app/router"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
 // fakeSession captures every prompt sent to it. Each fakeSession is bound
@@ -150,8 +150,8 @@ route "catch_all" {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			d := NewDispatcher(log.Default(), newFakeFactory())
-			d.SetRouteEngine(router.NewEngine(cfg, nil, log.Default()))
+			d := NewDispatcher(sysevent.Default(), newFakeFactory())
+			d.SetRouteEngine(router.NewEngine(cfg, nil, sysevent.Default()))
 			got := d.evaluateRoute([]byte(tc.body))
 			if got.Action != RouteDispatch || got.Reason != tc.wantReason {
 				t.Errorf("evaluateRoute() = %+v; want action=%s reason=%s", got, RouteDispatch, tc.wantReason)
@@ -163,7 +163,7 @@ route "catch_all" {
 func TestDispatcherDifferentCardsRunInParallel(t *testing.T) {
 	factory := newFakeFactory()
 	factory.delay = 80 * time.Millisecond
-	d := NewDispatcher(log.Default(), factory)
+	d := NewDispatcher(sysevent.Default(), factory)
 	defer d.Stop()
 
 	cards := []string{"aaa", "bbb", "ccc", "ddd"}
@@ -200,7 +200,7 @@ func TestDispatcherDifferentCardsRunInParallel(t *testing.T) {
 func TestDispatcherSameCardEventsSerialised(t *testing.T) {
 	factory := newFakeFactory()
 	factory.delay = 30 * time.Millisecond
-	d := NewDispatcher(log.Default(), factory)
+	d := NewDispatcher(sysevent.Default(), factory)
 	defer d.Stop()
 
 	const cardID = "card-x"
@@ -235,7 +235,7 @@ func TestDispatcherSameCardEventsSerialised(t *testing.T) {
 
 func TestDispatcherDropsUnsupportedEvents(t *testing.T) {
 	factory := newFakeFactory()
-	d := NewDispatcher(log.Default(), factory)
+	d := NewDispatcher(sysevent.Default(), factory)
 	defer d.Stop()
 
 	// updateCard without a list move = drop.
@@ -255,7 +255,7 @@ func TestDispatcherDropsUnsupportedEvents(t *testing.T) {
 
 func TestDispatcherDepartureWithoutWorkerIsNoop(t *testing.T) {
 	factory := newFakeFactory()
-	d := NewDispatcher(log.Default(), factory)
+	d := NewDispatcher(sysevent.Default(), factory)
 	defer d.Stop()
 
 	// First event for the card is a departure (move to a non-active list).
@@ -274,7 +274,7 @@ func TestDispatcherDepartureWithoutWorkerIsNoop(t *testing.T) {
 
 func TestDispatcherTerminateNotifiesAndShutsDownWorker(t *testing.T) {
 	factory := newFakeFactory()
-	d := NewDispatcher(log.Default(), factory)
+	d := NewDispatcher(sysevent.Default(), factory)
 	defer d.Stop()
 
 	const cardID = "card-y"
@@ -314,7 +314,7 @@ func TestDispatcherTerminateNotifiesAndShutsDownWorker(t *testing.T) {
 
 func TestDispatcherTerminateWithoutWorkerIsNoop(t *testing.T) {
 	factory := newFakeFactory()
-	d := NewDispatcher(log.Default(), factory)
+	d := NewDispatcher(sysevent.Default(), factory)
 	defer d.Stop()
 
 	body := `{"action":{"type":"deleteCard","data":{"card":{"id":"never-seen-card"}}}}`
@@ -330,7 +330,7 @@ func TestDispatcherTerminateWithoutWorkerIsNoop(t *testing.T) {
 
 func TestDispatcherStopAfterStopReturnsError(t *testing.T) {
 	factory := newFakeFactory()
-	d := NewDispatcher(log.Default(), factory)
+	d := NewDispatcher(sysevent.Default(), factory)
 	d.Stop()
 
 	body := `{"action":{"type":"updateCard","data":{"card":{"id":"card-c"},"listAfter":{"name":"Analyze"}}}}`
@@ -343,7 +343,7 @@ func TestDispatcherStopAfterStopReturnsError(t *testing.T) {
 func TestDispatcherSessionCreationFailureDoesNotPanic(t *testing.T) {
 	factory := newFakeFactory()
 	factory.createErr = errors.New("create boom")
-	d := NewDispatcher(log.Default(), factory)
+	d := NewDispatcher(sysevent.Default(), factory)
 	defer d.Stop()
 
 	body := `{"action":{"type":"updateCard","data":{"card":{"id":"card-c"},"listAfter":{"name":"Analyze"}}}}`
@@ -361,7 +361,7 @@ func TestDispatcherSessionCreationFailureDoesNotPanic(t *testing.T) {
 
 func TestDispatcherIdleTimeoutDisconnectsSession(t *testing.T) {
 	factory := newFakeFactory()
-	d := NewDispatcher(log.Default(), factory)
+	d := NewDispatcher(sysevent.Default(), factory)
 	d.idleTimeout = 100 * time.Millisecond
 	defer d.Stop()
 
@@ -399,7 +399,7 @@ func TestDispatcherIdleTimeoutDisconnectsSession(t *testing.T) {
 
 func TestDispatcherIdleTimeoutWorkerAcceptsNewEvents(t *testing.T) {
 	factory := newFakeFactory()
-	d := NewDispatcher(log.Default(), factory)
+	d := NewDispatcher(sysevent.Default(), factory)
 	d.idleTimeout = 100 * time.Millisecond
 	defer d.Stop()
 
@@ -444,7 +444,7 @@ func TestDispatcherIdleTimeoutWorkerAcceptsNewEvents(t *testing.T) {
 
 func TestDispatcherDeleteWorkerNotFound(t *testing.T) {
 	factory := newFakeFactory()
-	d := NewDispatcher(log.Default(), factory)
+	d := NewDispatcher(sysevent.Default(), factory)
 	defer d.Stop()
 
 	if _, err := d.DeleteWorker("nope"); !errors.Is(err, ErrWorkerNotFound) {
@@ -454,7 +454,7 @@ func TestDispatcherDeleteWorkerNotFound(t *testing.T) {
 
 func TestDispatcherDeleteWorkerRemovesWorkdirAndDeregisters(t *testing.T) {
 	factory := newFakeFactory()
-	d := NewDispatcher(log.Default(), factory)
+	d := NewDispatcher(sysevent.Default(), factory)
 	defer d.Stop()
 
 	const cardID = "del-card"
@@ -526,7 +526,7 @@ func TestDispatcherDeleteWorkerCancelsInflightSend(t *testing.T) {
 	// Long delay so SendAndWait blocks; DeleteWorker must cancel the ctx
 	// passed into it so the goroutine returns promptly.
 	factory.delay = 5 * time.Second
-	d := NewDispatcher(log.Default(), factory)
+	d := NewDispatcher(sysevent.Default(), factory)
 	defer d.Stop()
 
 	const cardID = "kill-card"

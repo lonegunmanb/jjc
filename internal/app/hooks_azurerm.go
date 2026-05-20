@@ -5,13 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/lonegunmanb/jjc/internal/app/aiassistedrefresh"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
 // azurermProviderModuleLine is the exact (post-trim) module declaration
@@ -44,8 +44,8 @@ type AzureRMRefreshHookOptions struct {
 	// applies).
 	Timeout time.Duration
 
-	// Logger receives lifecycle log lines. Defaults to log.Default().
-	Logger *log.Logger
+	// Logger receives lifecycle log lines. Defaults to sysevent.Default().
+	Logger sysevent.Sink
 }
 
 // NewAzureRMRefreshHook returns a WorkDirHook that runs only when the
@@ -72,7 +72,7 @@ func NewAzureRMRefreshHook(opts AzureRMRefreshHookOptions) (WorkDirHook, error) 
 	}
 	logger := opts.Logger
 	if logger == nil {
-		logger = log.Default()
+		logger = sysevent.Default()
 	}
 	timeout := opts.Timeout
 	if timeout == 0 {
@@ -82,12 +82,12 @@ func NewAzureRMRefreshHook(opts AzureRMRefreshHookOptions) (WorkDirHook, error) 
 	return func(ctx context.Context, info WorkDirInfo) error {
 		match, err := isAzureRMProviderModule(info.WorkDir)
 		if err != nil {
-			logger.Printf("event=azurerm_refresh_hook_inspect_failed card_id=%s work_dir=%s err=%v",
+			sysevent.Emitf(logger, "azurerm_refresh_hook_inspect_failed", "card_id=%s work_dir=%s err=%v",
 				info.CardID, info.WorkDir, err)
 			return fmt.Errorf("inspect go.mod under %s: %w", info.WorkDir, err)
 		}
 		if !match {
-			logger.Printf("event=azurerm_refresh_hook_skip card_id=%s work_dir=%s reason=not_azurerm_provider",
+			sysevent.Emitf(logger, "azurerm_refresh_hook_skip", "card_id=%s work_dir=%s reason=not_azurerm_provider",
 				info.CardID, info.WorkDir)
 			return nil
 		}
@@ -101,12 +101,12 @@ func NewAzureRMRefreshHook(opts AzureRMRefreshHookOptions) (WorkDirHook, error) 
 
 		issueNumber, resolveErr := resolveAzureRMIssueNumber(callCtx, info, opts.CardInfoFetcher, logger)
 		if resolveErr != nil {
-			logger.Printf("event=azurerm_refresh_hook_skip card_id=%s work_dir=%s reason=issue_number_unresolved err=%v",
+			sysevent.Emitf(logger, "azurerm_refresh_hook_skip", "card_id=%s work_dir=%s reason=issue_number_unresolved err=%v",
 				info.CardID, info.WorkDir, resolveErr)
 			return nil
 		}
 
-		logger.Printf("event=azurerm_refresh_hook_invoking card_id=%s work_dir=%s issue=%s",
+		sysevent.Emitf(logger, "azurerm_refresh_hook_invoking", "card_id=%s work_dir=%s issue=%s",
 			info.CardID, info.WorkDir, issueNumber)
 		start := time.Now()
 		err = opts.Refresher.Refresh(callCtx, aiassistedrefresh.Options{
@@ -114,11 +114,11 @@ func NewAzureRMRefreshHook(opts AzureRMRefreshHookOptions) (WorkDirHook, error) 
 			Issue:         issueNumber,
 		})
 		if err != nil {
-			logger.Printf("event=azurerm_refresh_hook_failed card_id=%s work_dir=%s err=%v",
+			sysevent.Emitf(logger, "azurerm_refresh_hook_failed", "card_id=%s work_dir=%s err=%v",
 				info.CardID, info.WorkDir, err)
 			return fmt.Errorf("refresh azurerm work_dir %s: %w", info.WorkDir, err)
 		}
-		logger.Printf("event=azurerm_refresh_hook_done card_id=%s duration=%s",
+		sysevent.Emitf(logger, "azurerm_refresh_hook_done", "card_id=%s duration=%s",
 			info.CardID, time.Since(start))
 		return nil
 	}, nil
@@ -156,7 +156,7 @@ func isAzureRMProviderModule(workDir string) (bool, error) {
 // classification (already populated by classifyForWorker before the
 // hook fires) and only falls back to a Trello fetch when the
 // classification is missing.
-func resolveAzureRMIssueNumber(ctx context.Context, info WorkDirInfo, fetcher CardInfoFetcher, logger *log.Logger) (string, error) {
+func resolveAzureRMIssueNumber(ctx context.Context, info WorkDirInfo, fetcher CardInfoFetcher, logger sysevent.Sink) (string, error) {
 	if n := strings.TrimSpace(info.Classification.GitHub.Number); n != "" {
 		return n, nil
 	}
@@ -171,7 +171,7 @@ func resolveAzureRMIssueNumber(ctx context.Context, info WorkDirInfo, fetcher Ca
 	if n := strings.TrimSpace(cls.GitHub.Number); n != "" {
 		return n, nil
 	}
-	logger.Printf("event=azurerm_refresh_hook_classify_no_number card_id=%s text_bytes=%d",
+	sysevent.Emitf(logger, "azurerm_refresh_hook_classify_no_number", "card_id=%s text_bytes=%d",
 		info.CardID, len(text))
 	return "", errors.New("could not extract issue number from card description")
 }

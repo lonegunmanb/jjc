@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"github.com/lonegunmanb/jjc/internal/app/trelloclient"
 	"github.com/lonegunmanb/jjc/internal/app/tunnel"
 )
@@ -47,7 +48,7 @@ func TestStartTunnelAndReconcileDefaultPathUpdatesWebhook(t *testing.T) {
 	trelloClient, err := trelloclient.New(
 		trelloclient.WithCredentials("key", "tok"),
 		trelloclient.WithServer(trelloServer.URL),
-		trelloclient.WithLogger(log.New(io.Discard, "", 0)),
+		trelloclient.WithLogger(sysevent.FromLogger(log.New(io.Discard, "", 0))),
 	)
 	if err != nil {
 		t.Fatalf("trelloclient.New: %v", err)
@@ -68,7 +69,7 @@ func TestStartTunnelAndReconcileDefaultPathUpdatesWebhook(t *testing.T) {
 	provider, err := tunnel.NewCloudflaredProvider(
 		tunnel.WithBinary(fakeCloudflared),
 		tunnel.WithHTTPClient(headClient),
-		tunnel.WithLogger(log.New(io.Discard, "", 0)),
+		tunnel.WithLogger(sysevent.FromLogger(log.New(io.Discard, "", 0))),
 	)
 	if err != nil {
 		t.Fatalf("NewCloudflaredProvider: %v", err)
@@ -78,7 +79,7 @@ func TestStartTunnelAndReconcileDefaultPathUpdatesWebhook(t *testing.T) {
 	cfg := Config{Tunnel: tunnel.Cloudflared, TrelloAPIToken: "tok", KanbanBoardID: "board-1"}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	id, err := StartTunnelAndReconcile(ctx, &cfg, provider, trelloClient, "127.0.0.1:18790", log.New(io.Discard, "", 0))
+	id, err := StartTunnelAndReconcile(ctx, &cfg, provider, trelloClient, "127.0.0.1:18790", sysevent.FromLogger(log.New(io.Discard, "", 0)))
 	if err != nil {
 		t.Fatalf("StartTunnelAndReconcile: %v", err)
 	}
@@ -136,7 +137,7 @@ func TestStartTunnelAndReconcileWithOwnershipReportsCreatedFlag(t *testing.T) {
 			trelloClient, err := trelloclient.New(
 				trelloclient.WithCredentials("key", "tok"),
 				trelloclient.WithServer(trelloServer.URL),
-				trelloclient.WithLogger(log.New(io.Discard, "", 0)),
+				trelloclient.WithLogger(sysevent.FromLogger(log.New(io.Discard, "", 0))),
 			)
 			if err != nil {
 				t.Fatalf("trelloclient.New: %v", err)
@@ -154,7 +155,7 @@ func TestStartTunnelAndReconcileWithOwnershipReportsCreatedFlag(t *testing.T) {
 			provider, err := tunnel.NewCloudflaredProvider(
 				tunnel.WithBinary(fakeCloudflared),
 				tunnel.WithHTTPClient(headClient),
-				tunnel.WithLogger(log.New(io.Discard, "", 0)),
+				tunnel.WithLogger(sysevent.FromLogger(log.New(io.Discard, "", 0))),
 			)
 			if err != nil {
 				t.Fatalf("NewCloudflaredProvider: %v", err)
@@ -164,7 +165,7 @@ func TestStartTunnelAndReconcileWithOwnershipReportsCreatedFlag(t *testing.T) {
 			cfg := Config{Tunnel: tunnel.Cloudflared, TrelloAPIToken: "tok", KanbanBoardID: "board-1"}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			id, createdNow, err := StartTunnelAndReconcileWithOwnership(ctx, &cfg, provider, trelloClient, "127.0.0.1:18790", log.New(io.Discard, "", 0))
+			id, createdNow, err := StartTunnelAndReconcileWithOwnership(ctx, &cfg, provider, trelloClient, "127.0.0.1:18790", sysevent.FromLogger(log.New(io.Discard, "", 0)))
 			if err != nil {
 				t.Fatalf("StartTunnelAndReconcileWithOwnership: %v", err)
 			}
@@ -191,13 +192,13 @@ func TestDeleteGatewayCreatedWebhookSkipsNonOwnedWebhooks(t *testing.T) {
 	trelloClient, err := trelloclient.New(
 		trelloclient.WithCredentials("key", "tok"),
 		trelloclient.WithServer(trelloServer.URL),
-		trelloclient.WithLogger(log.New(io.Discard, "", 0)),
+		trelloclient.WithLogger(sysevent.FromLogger(log.New(io.Discard, "", 0))),
 	)
 	if err != nil {
 		t.Fatalf("trelloclient.New: %v", err)
 	}
 	cfg := Config{TrelloAPIToken: "tok", KanbanBoardID: "board-1"}
-	if err := DeleteGatewayCreatedWebhook(context.Background(), &cfg, trelloClient, "hook-existing", false, log.New(io.Discard, "", 0)); err != nil {
+	if err := DeleteGatewayCreatedWebhook(context.Background(), &cfg, trelloClient, "hook-existing", false, sysevent.FromLogger(log.New(io.Discard, "", 0))); err != nil {
 		t.Fatalf("DeleteGatewayCreatedWebhook: %v", err)
 	}
 }
@@ -221,13 +222,13 @@ func TestDeleteGatewayCreatedWebhookDeletesOwnedWebhook(t *testing.T) {
 	trelloClient, err := trelloclient.New(
 		trelloclient.WithCredentials("key", "tok"),
 		trelloclient.WithServer(trelloServer.URL),
-		trelloclient.WithLogger(log.New(io.Discard, "", 0)),
+		trelloclient.WithLogger(sysevent.FromLogger(log.New(io.Discard, "", 0))),
 	)
 	if err != nil {
 		t.Fatalf("trelloclient.New: %v", err)
 	}
 	cfg := Config{TrelloAPIToken: "tok", KanbanBoardID: "board-1"}
-	if err := DeleteGatewayCreatedWebhook(context.Background(), &cfg, trelloClient, "hook-new", true, log.New(io.Discard, "", 0)); err != nil {
+	if err := DeleteGatewayCreatedWebhook(context.Background(), &cfg, trelloClient, "hook-new", true, sysevent.FromLogger(log.New(io.Discard, "", 0))); err != nil {
 		t.Fatalf("DeleteGatewayCreatedWebhook: %v", err)
 	}
 	if !sawDelete {
@@ -248,13 +249,13 @@ func TestDeleteGatewayCreatedWebhookIsIdempotent(t *testing.T) {
 	trelloClient, err := trelloclient.New(
 		trelloclient.WithCredentials("key", "tok"),
 		trelloclient.WithServer(trelloServer.URL),
-		trelloclient.WithLogger(log.New(io.Discard, "", 0)),
+		trelloclient.WithLogger(sysevent.FromLogger(log.New(io.Discard, "", 0))),
 	)
 	if err != nil {
 		t.Fatalf("trelloclient.New: %v", err)
 	}
 	cfg := Config{TrelloAPIToken: "tok", KanbanBoardID: "board-1"}
-	if err := DeleteGatewayCreatedWebhook(context.Background(), &cfg, trelloClient, "hook-gone", true, log.New(io.Discard, "", 0)); err != nil {
+	if err := DeleteGatewayCreatedWebhook(context.Background(), &cfg, trelloClient, "hook-gone", true, sysevent.FromLogger(log.New(io.Discard, "", 0))); err != nil {
 		t.Fatalf("DeleteGatewayCreatedWebhook on a 404 webhook should be a no-op, got: %v", err)
 	}
 }

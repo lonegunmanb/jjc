@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	copilot "github.com/github/copilot-sdk/go"
 
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"github.com/lonegunmanb/jjc/internal/app/trelloclient"
 )
 
@@ -51,12 +51,12 @@ const trelloToolTimeout = 30 * time.Second
 //
 // Returns an empty slice when client is nil so callers (and tests)
 // don't have to special-case that.
-func BuildTrelloTools(client trelloclient.Client, logger *log.Logger) []copilot.Tool {
+func BuildTrelloTools(client trelloclient.Client, logger sysevent.Sink) []copilot.Tool {
 	if client == nil {
 		return nil
 	}
 	if logger == nil {
-		logger = log.Default()
+		logger = sysevent.Default()
 	}
 
 	cardGet := copilot.DefineTool(
@@ -235,7 +235,7 @@ func withTimeout(_ copilot.ToolInvocation) (context.Context, context.CancelFunc)
 // logToolEvent emits a structured log line for every Trello tool call
 // so post-incident the operator can reconstruct what the worker did
 // (and which session triggered it).
-func logToolEvent(logger *log.Logger, inv copilot.ToolInvocation, tool, target string, err error) {
+func logToolEvent(logger sysevent.Sink, inv copilot.ToolInvocation, tool, target string, err error) {
 	session := inv.SessionID
 	if session == "" {
 		session = "-"
@@ -245,10 +245,10 @@ func logToolEvent(logger *log.Logger, inv copilot.ToolInvocation, tool, target s
 		call = "-"
 	}
 	if err != nil {
-		logger.Printf("event=%s_failed session=%s call=%s target=%s err=%v", tool, session, call, target, err)
+		sysevent.Emitf(logger, tool+"_failed", "session=%s call=%s target=%s err=%v", session, call, target, err)
 		return
 	}
-	logger.Printf("event=%s_ok session=%s call=%s target=%s", tool, session, call, target)
+	sysevent.Emitf(logger, tool+"_ok", "session=%s call=%s target=%s", session, call, target)
 }
 
 // trelloCardGetParams matches the JSON args for tools that operate on

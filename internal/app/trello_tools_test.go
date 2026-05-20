@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"github.com/lonegunmanb/jjc/internal/app/trelloclient"
 )
 
@@ -79,7 +80,7 @@ func (f *fakeTrelloClient) DeleteWebhook(context.Context, string, string) error 
 	return errors.New("deleteWebhook not implemented")
 }
 
-func quietLogger() *log.Logger { return log.New(io.Discard, "", 0) }
+func quietLogger() sysevent.Sink { return sysevent.FromLogger(log.New(io.Discard, "", 0)) }
 
 func TestBuildTrelloToolsReturnsExpectedNames(t *testing.T) {
 	got := BuildTrelloTools(&fakeTrelloClient{}, quietLogger())

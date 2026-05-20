@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,7 +103,7 @@ func defaultGitRunner(ctx context.Context, args ...string) ([]byte, error) {
 // contend, and hook registration is allowed at any time (new hooks will
 // be picked up by the next Prepare call).
 type WorkDirPreparer struct {
-	logger    *log.Logger
+	logger    sysevent.Sink
 	gitRunner GitRunner
 	// baseDir is the parent directory under which each card's work_dir is
 	// created (work_dir = filepath.Join(baseDir, cardID)). Defaults to
@@ -121,9 +121,9 @@ type WorkDirPreparer struct {
 // NewWorkDirPreparer returns a preparer wired to the real git binary, the
 // canonical C:\project base directory, and a 60-second clone timeout.
 // Pass nil logger to use log.Default.
-func NewWorkDirPreparer(logger *log.Logger) *WorkDirPreparer {
+func NewWorkDirPreparer(logger sysevent.Sink) *WorkDirPreparer {
 	if logger == nil {
-		logger = log.Default()
+		logger = sysevent.Default()
 	}
 	return &WorkDirPreparer{
 		logger:       logger,
@@ -210,15 +210,15 @@ func (p *WorkDirPreparer) Prepare(ctx context.Context, cardID string, c CardClas
 
 	preexisted := dirExists(workDir)
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		p.logger.Printf("event=workdir_mkdir_failed card_id=%s work_dir=%s err=%v",
+		sysevent.Emitf(p.logger, "workdir_mkdir_failed", "card_id=%s work_dir=%s err=%v",
 			cardID, workDir, err)
 		return info, fmt.Errorf("ensure work_dir %s: %w", workDir, err)
 	}
 	info.CreatedDir = !preexisted
 	if info.CreatedDir {
-		p.logger.Printf("event=workdir_created card_id=%s work_dir=%s", cardID, workDir)
+		sysevent.Emitf(p.logger, "workdir_created", "card_id=%s work_dir=%s", cardID, workDir)
 	} else {
-		p.logger.Printf("event=workdir_reused card_id=%s work_dir=%s", cardID, workDir)
+		sysevent.Emitf(p.logger, "workdir_reused", "card_id=%s work_dir=%s", cardID, workDir)
 	}
 
 	if info.HasGitHubRepo() {
@@ -236,7 +236,7 @@ func (p *WorkDirPreparer) maybeClone(ctx context.Context, info *WorkDirInfo) {
 	gitDir := filepath.Join(info.WorkDir, ".git")
 	if _, err := os.Stat(gitDir); err == nil {
 		info.CloneSkippedExisting = true
-		p.logger.Printf("event=workdir_clone_skipped_existing card_id=%s work_dir=%s",
+		sysevent.Emitf(p.logger, "workdir_clone_skipped_existing", "card_id=%s work_dir=%s",
 			info.CardID, info.WorkDir)
 		return
 	}
@@ -253,12 +253,12 @@ func (p *WorkDirPreparer) maybeClone(ctx context.Context, info *WorkDirInfo) {
 	out, err := p.gitRunner(cloneCtx, "clone", "--depth", "1", url, info.WorkDir)
 	if err != nil {
 		info.CloneError = err
-		p.logger.Printf("event=workdir_clone_failed card_id=%s url=%s duration=%s err=%v output=%q",
+		sysevent.Emitf(p.logger, "workdir_clone_failed", "card_id=%s url=%s duration=%s err=%v output=%q",
 			info.CardID, url, time.Since(start), err, truncateBytes(out, 400))
 		return
 	}
 	info.Cloned = true
-	p.logger.Printf("event=workdir_cloned card_id=%s url=%s work_dir=%s duration=%s",
+	sysevent.Emitf(p.logger, "workdir_cloned", "card_id=%s url=%s work_dir=%s duration=%s",
 		info.CardID, url, info.WorkDir, time.Since(start))
 }
 
@@ -275,11 +275,11 @@ func (p *WorkDirPreparer) runHooks(ctx context.Context, info WorkDirInfo) {
 		err := safeInvokeHook(ctx, h, info)
 		dur := time.Since(start)
 		if err != nil {
-			p.logger.Printf("event=workdir_hook_failed card_id=%s hook_index=%d duration=%s err=%v",
+			sysevent.Emitf(p.logger, "workdir_hook_failed", "card_id=%s hook_index=%d duration=%s err=%v",
 				info.CardID, idx, dur, err)
 			continue
 		}
-		p.logger.Printf("event=workdir_hook_ok card_id=%s hook_index=%d duration=%s",
+		sysevent.Emitf(p.logger, "workdir_hook_ok", "card_id=%s hook_index=%d duration=%s",
 			info.CardID, idx, dur)
 	}
 }
