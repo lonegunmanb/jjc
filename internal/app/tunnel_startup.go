@@ -65,7 +65,12 @@ func StartTunnelAndReconcile(ctx context.Context, cfg *Config, provider tunnel.P
 
 // StartTunnelAndReconcileWithOwnership is the full-fidelity variant of
 // StartTunnelAndReconcile. It additionally reports whether this call
-// created the webhook (vs. updating one that already existed).
+// CREATED the webhook (vs. updating one that already existed). main.go
+// uses the flag to decide whether to clean the webhook up on shutdown:
+// gateway-owned webhooks get deleted so a TryCloudflare URL that just
+// died doesn't keep a dangling webhook on Trello; pre-existing
+// out-of-band webhooks (e.g. operator-managed for a stable DNS-backed
+// callback) are left alone.
 func StartTunnelAndReconcileWithOwnership(ctx context.Context, cfg *Config, provider tunnel.Provider, trelloClient trelloclient.Client, localAddr string, logger sysevent.Sink) (string, bool, error) {
 	if cfg == nil {
 		return "", false, errors.New("config is nil")

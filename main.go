@@ -250,10 +250,10 @@ func main() {
 	if cfg.Tunnel != tunnel.None {
 		tunnelCtx, tunnelCancel := context.WithTimeout(ctx, 60*time.Second)
 		webhookID, createdNow, err := app.StartTunnelAndReconcileWithOwnership(tunnelCtx, &cfg, tunnelProvider, trelloClient, cfg.ListenAddr, logger)
+		tunnelCancel()
 		if err != nil {
 			emitAndExit(logger, "tunnel_start_failed", "provider=%s err=%v", cfg.Tunnel, err)
 		}
-		tunnelCancel()
 		// If THIS process created the webhook (vs. updated an existing
 		// one operators provisioned out-of-band), delete it on shutdown
 		// so a defunct trycloudflare URL doesn't keep a dangling
