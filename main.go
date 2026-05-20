@@ -306,5 +306,16 @@ func main() {
 
 func emitAndExit(s sysevent.Sink, token, format string, args ...any) {
 	sysevent.Emitf(s, token, format, args...)
+	// Operator-facing copy on stderr: the gateway routes all sysevent
+	// output to a log file so the TUI can own stdio, which means a
+	// fatal startup error like "configured copilot model is not
+	// available" is otherwise invisible to whoever launched the
+	// process — they just see exit code 1. Echo the same formatted
+	// line to stderr so the immediate caller (shell, systemd, CI)
+	// gets the actual reason without having to open the log file.
+	fmt.Fprintln(os.Stderr, sysevent.Format(sysevent.Event{
+		Token:   token,
+		Message: fmt.Sprintf(format, args...),
+	}))
 	os.Exit(1)
 }
