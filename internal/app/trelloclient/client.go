@@ -106,6 +106,13 @@ type Client interface {
 	ListTokenWebhooks(ctx context.Context, token string) ([]Webhook, error)
 	UpdateWebhookCallback(ctx context.Context, webhookID, callbackURL string) error
 	CreateTokenWebhook(ctx context.Context, token, boardID, callbackURL, description string) (Webhook, error)
+
+	// DeleteWebhook removes a webhook by id. Implementations should
+	// treat "already gone" responses (HTTP 404) as success so callers
+	// (typically a shutdown cleanup path) are idempotent and never
+	// surface a spurious error on a webhook that an operator already
+	// removed manually.
+	DeleteWebhook(ctx context.Context, token, webhookID string) error
 }
 
 // ErrNoComments is the sentinel returned (wrapped) by GetLatestComment
@@ -435,28 +442,68 @@ func (c *sdkBackedClient) CreateTokenWebhook(ctx context.Context, token, boardID
 	return hook, nil
 }
 
-func ReconcileBoardWebhook(ctx context.Context, c Client, token, boardID, callbackURL string) (string, error) {
+// DeleteWebhook removes a webhook by id, scoped to the supplied token.
+// A 404 response is treated as success so a shutdown-time cleanup can
+// safely run more than once (or after an operator deleted the webhook
+// by hand in the Trello UI).
+func (c *sdkBackedClient) DeleteWebhook(ctx context.Context, token, webhookID string) error {
+	if token == "" {
+		return errors.New("trelloclient: token is empty")
+	}
+	if webhookID == "" {
+		return errors.New("trelloclient: webhook id is empty")
+	}
+	resp, err := c.sdk.DeleteTokensTokenWebhooksIdwebhook(ctx, token, webhookID)
+	if err != nil {
+		return fmt.Errorf("trelloclient: DELETE /tokens/%s/webhooks/%s: %w", token, webhookID, err)
+	}
+	// 404 = the webhook is already gone (operator removed it manually
+	// or a previous shutdown cleanup already ran). Treat as success so
+	// the cleanup path is safely idempotent.
+	if resp != nil && resp.StatusCode == http.StatusNotFound {
+		_ = resp.Body.Close()
+		return nil
+	}
+	if _, err := readAndCheck(resp, http.StatusOK, "DELETE /tokens/"+token+"/webhooks/"+webhookID); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ReconcileBoardWebhook ensures exactly one webhook exists for the
+// supplied board under the supplied token, pointing at callbackURL.
+// It returns:
+//   - the webhook id (always non-empty on a nil error);
+//   - a `createdNow` flag that is true iff this call created a brand-new
+//     webhook (and the caller therefore owns its lifecycle and should
+//     DeleteWebhook on shutdown to keep Trello clean); false when the
+//     existing webhook for the board was updated in place.
+//
+// The createdNow distinction matters because operators who pre-create
+// a long-lived webhook out-of-band (e.g. for a stable callback URL
+// behind a real DNS name) do NOT want gateway shutdown to delete it.
+func ReconcileBoardWebhook(ctx context.Context, c Client, token, boardID, callbackURL string) (string, bool, error) {
 	if c == nil {
-		return "", errors.New("trelloclient: client is nil")
+		return "", false, errors.New("trelloclient: client is nil")
 	}
 	hooks, err := c.ListTokenWebhooks(ctx, token)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	for _, hook := range hooks {
 		if hook.IDModel != boardID {
 			continue
 		}
 		if err := c.UpdateWebhookCallback(ctx, hook.ID, callbackURL); err != nil {
-			return "", err
+			return "", false, err
 		}
-		return hook.ID, nil
+		return hook.ID, false, nil
 	}
-	hook, err := c.CreateTokenWebhook(ctx, token, boardID, callbackURL, "trello-copilot-gateway")
+	hook, err := c.CreateTokenWebhook(ctx, token, boardID, callbackURL, "jjc-gateway")
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	return hook.ID, nil
+	return hook.ID, true, nil
 }
 
 // commentsPerPage is the maximum page size Trello accepts for the

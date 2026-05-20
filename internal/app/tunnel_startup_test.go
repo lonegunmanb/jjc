@@ -90,6 +90,175 @@ func TestStartTunnelAndReconcileDefaultPathUpdatesWebhook(t *testing.T) {
 	}
 }
 
+// TestStartTunnelAndReconcileWithOwnershipReportsCreatedFlag verifies the
+// new createdNow return value: true when this call POSTed a brand-new
+// webhook (i.e. the gateway owns it and shutdown should delete it),
+// false when it only PUT-updated an existing one (operator owns it;
+// leave alone).
+func TestStartTunnelAndReconcileWithOwnershipReportsCreatedFlag(t *testing.T) {
+	cases := []struct {
+		name           string
+		listResponse   string
+		wantCreatedNow bool
+		wantWebhookID  string
+	}{
+		{
+			name:           "existing-webhook-is-updated-not-owned",
+			listResponse:   `[{"id":"hook-existing","idModel":"board-1","callbackURL":"https://old/"}]`,
+			wantCreatedNow: false,
+			wantWebhookID:  "hook-existing",
+		},
+		{
+			name:           "missing-webhook-is-created-and-owned",
+			listResponse:   `[]`,
+			wantCreatedNow: true,
+			wantWebhookID:  "hook-new",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeCloudflared := buildFakeCloudflared(t)
+			trelloServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/tokens/tok/webhooks":
+					_, _ = w.Write([]byte(tc.listResponse))
+				case r.Method == http.MethodPut && r.URL.Path == "/webhooks/hook-existing":
+					_, _ = w.Write([]byte(`{"id":"hook-existing"}`))
+				case r.Method == http.MethodPost && r.URL.Path == "/tokens/tok/webhooks":
+					_, _ = w.Write([]byte(`{"id":"hook-new","idModel":"board-1"}`))
+				default:
+					t.Fatalf("unexpected Trello request: %s %s", r.Method, r.URL.String())
+				}
+			}))
+			defer trelloServer.Close()
+
+			trelloClient, err := trelloclient.New(
+				trelloclient.WithCredentials("key", "tok"),
+				trelloclient.WithServer(trelloServer.URL),
+				trelloclient.WithLogger(log.New(io.Discard, "", 0)),
+			)
+			if err != nil {
+				t.Fatalf("trelloclient.New: %v", err)
+			}
+
+			headClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("")),
+					Request:    r,
+				}, nil
+			})}
+			provider, err := tunnel.NewCloudflaredProvider(
+				tunnel.WithBinary(fakeCloudflared),
+				tunnel.WithHTTPClient(headClient),
+				tunnel.WithLogger(log.New(io.Discard, "", 0)),
+			)
+			if err != nil {
+				t.Fatalf("NewCloudflaredProvider: %v", err)
+			}
+			defer func() { _ = provider.Stop() }()
+
+			cfg := Config{Tunnel: tunnel.Cloudflared, TrelloAPIToken: "tok", KanbanBoardID: "board-1"}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			id, createdNow, err := StartTunnelAndReconcileWithOwnership(ctx, &cfg, provider, trelloClient, "127.0.0.1:18790", log.New(io.Discard, "", 0))
+			if err != nil {
+				t.Fatalf("StartTunnelAndReconcileWithOwnership: %v", err)
+			}
+			if id != tc.wantWebhookID {
+				t.Fatalf("webhook id: got %q want %q", id, tc.wantWebhookID)
+			}
+			if createdNow != tc.wantCreatedNow {
+				t.Fatalf("createdNow: got %v want %v", createdNow, tc.wantCreatedNow)
+			}
+		})
+	}
+}
+
+// TestDeleteGatewayCreatedWebhookSkipsNonOwnedWebhooks pins one half of
+// the cleanup contract main.go relies on: the helper is a no-op for a
+// webhook the gateway did NOT create (operator-managed, stable DNS-
+// backed callback URL). Crucially: do NOT issue a DELETE.
+func TestDeleteGatewayCreatedWebhookSkipsNonOwnedWebhooks(t *testing.T) {
+	trelloServer := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		t.Fatalf("shutdown cleanup must NOT hit Trello when createdNow=false (got %s %s)", r.Method, r.URL.String())
+	}))
+	defer trelloServer.Close()
+
+	trelloClient, err := trelloclient.New(
+		trelloclient.WithCredentials("key", "tok"),
+		trelloclient.WithServer(trelloServer.URL),
+		trelloclient.WithLogger(log.New(io.Discard, "", 0)),
+	)
+	if err != nil {
+		t.Fatalf("trelloclient.New: %v", err)
+	}
+	cfg := Config{TrelloAPIToken: "tok", KanbanBoardID: "board-1"}
+	if err := DeleteGatewayCreatedWebhook(context.Background(), &cfg, trelloClient, "hook-existing", false, log.New(io.Discard, "", 0)); err != nil {
+		t.Fatalf("DeleteGatewayCreatedWebhook: %v", err)
+	}
+}
+
+// TestDeleteGatewayCreatedWebhookDeletesOwnedWebhook pins the other
+// half: for a webhook this process created, the helper issues the
+// DELETE so a defunct trycloudflare URL does not keep a dangling
+// webhook on Trello.
+func TestDeleteGatewayCreatedWebhookDeletesOwnedWebhook(t *testing.T) {
+	var sawDelete bool
+	trelloServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete && r.URL.Path == "/tokens/tok/webhooks/hook-new" {
+			sawDelete = true
+			_, _ = w.Write([]byte(`"hook-new"`))
+			return
+		}
+		t.Fatalf("unexpected Trello request: %s %s", r.Method, r.URL.String())
+	}))
+	defer trelloServer.Close()
+
+	trelloClient, err := trelloclient.New(
+		trelloclient.WithCredentials("key", "tok"),
+		trelloclient.WithServer(trelloServer.URL),
+		trelloclient.WithLogger(log.New(io.Discard, "", 0)),
+	)
+	if err != nil {
+		t.Fatalf("trelloclient.New: %v", err)
+	}
+	cfg := Config{TrelloAPIToken: "tok", KanbanBoardID: "board-1"}
+	if err := DeleteGatewayCreatedWebhook(context.Background(), &cfg, trelloClient, "hook-new", true, log.New(io.Discard, "", 0)); err != nil {
+		t.Fatalf("DeleteGatewayCreatedWebhook: %v", err)
+	}
+	if !sawDelete {
+		t.Fatal("expected DELETE request for owned webhook")
+	}
+}
+
+// TestDeleteGatewayCreatedWebhookIsIdempotent verifies the second-call
+// safety guarantee: a 404 from Trello (webhook already gone) is not an
+// error. main.go's defer chain may run twice in pathological
+// shutdown sequences; the cleanup must not surface a spurious failure.
+func TestDeleteGatewayCreatedWebhookIsIdempotent(t *testing.T) {
+	trelloServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer trelloServer.Close()
+
+	trelloClient, err := trelloclient.New(
+		trelloclient.WithCredentials("key", "tok"),
+		trelloclient.WithServer(trelloServer.URL),
+		trelloclient.WithLogger(log.New(io.Discard, "", 0)),
+	)
+	if err != nil {
+		t.Fatalf("trelloclient.New: %v", err)
+	}
+	cfg := Config{TrelloAPIToken: "tok", KanbanBoardID: "board-1"}
+	if err := DeleteGatewayCreatedWebhook(context.Background(), &cfg, trelloClient, "hook-gone", true, log.New(io.Discard, "", 0)); err != nil {
+		t.Fatalf("DeleteGatewayCreatedWebhook on a 404 webhook should be a no-op, got: %v", err)
+	}
+}
+
 func buildFakeCloudflared(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

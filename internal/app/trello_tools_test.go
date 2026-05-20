@@ -75,6 +75,9 @@ func (f *fakeTrelloClient) UpdateWebhookCallback(context.Context, string, string
 func (f *fakeTrelloClient) CreateTokenWebhook(context.Context, string, string, string, string) (trelloclient.Webhook, error) {
 	return trelloclient.Webhook{}, errors.New("createTokenWebhook not implemented")
 }
+func (f *fakeTrelloClient) DeleteWebhook(context.Context, string, string) error {
+	return errors.New("deleteWebhook not implemented")
+}
 
 func quietLogger() *log.Logger { return log.New(io.Discard, "", 0) }
 

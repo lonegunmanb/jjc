@@ -258,11 +258,24 @@ func main() {
 
 	if cfg.Tunnel != tunnel.None {
 		tunnelCtx, tunnelCancel := context.WithTimeout(ctx, 60*time.Second)
-		if _, err := app.StartTunnelAndReconcile(tunnelCtx, &cfg, tunnelProvider, trelloClient, cfg.ListenAddr, logger); err != nil {
-			tunnelCancel()
+		webhookID, createdNow, err := app.StartTunnelAndReconcileWithOwnership(tunnelCtx, &cfg, tunnelProvider, trelloClient, cfg.ListenAddr, logger)
+		tunnelCancel()
+		if err != nil {
 			logger.Fatalf("event=tunnel_start_failed provider=%s err=%v", cfg.Tunnel, err)
 		}
-		tunnelCancel()
+		// If THIS process created the webhook (vs. updated an existing
+		// one operators provisioned out-of-band), delete it on shutdown
+		// so a defunct trycloudflare URL doesn't keep a dangling
+		// webhook on Trello. A pre-existing webhook is left alone.
+		if createdNow {
+			defer func() {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cleanupCancel()
+				if err := app.DeleteGatewayCreatedWebhook(cleanupCtx, &cfg, trelloClient, webhookID, true, logger); err != nil {
+					logger.Printf("event=trello_webhook_shutdown_cleanup_error webhook_id=%s err=%v", webhookID, err)
+				}
+			}()
+		}
 	}
 
 	router := app.NewRouter(ctx, cfg, runner, logger)
