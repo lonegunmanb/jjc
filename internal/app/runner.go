@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -230,9 +231,50 @@ func (r *CopilotRunner) Start(ctx context.Context) error {
 		sysevent.Emitf(r.logger, "copilot_client_start_error", "err=%v", err)
 		return fmt.Errorf("start copilot client: %w", err)
 	}
+	if err := r.validateModel(ctx, c); err != nil {
+		// Best-effort tear-down so the SDK subprocess does not linger
+		// when the gateway exits because of a bad configured model.
+		if stopErr := c.Stop(); stopErr != nil {
+			sysevent.Emitf(r.logger, "copilot_client_stop_after_validation_error", "err=%v", stopErr)
+		}
+		return err
+	}
 	r.client = c
 	sysevent.Emitf(r.logger, "copilot_client_started", "model=%s duration=%s", r.model, time.Since(started))
 	return nil
+}
+
+// validateModel asks the SDK for the list of models available to the
+// current credentials and refuses to start if r.model is not in it.
+// On failure it logs event=copilot_model_not_available with the full
+// sorted ID list so operators can see at a glance what they could
+// have written instead.
+//
+// If the SDK itself fails to enumerate models (network blip, rate
+// limit, transient auth glitch) we log a warning and skip validation
+// — the gateway then degrades to the legacy behaviour of surfacing
+// the unknown-model error on the first session.create, which is
+// strictly no worse than before this validator existed.
+func (r *CopilotRunner) validateModel(ctx context.Context, c *copilot.Client) error {
+	models, err := c.ListModels(ctx)
+	if err != nil {
+		sysevent.Emitf(r.logger, "copilot_models_list_error",
+			"err=%v (skipping model validation)", err)
+		return nil
+	}
+	ids := make([]string, 0, len(models))
+	for _, m := range models {
+		ids = append(ids, m.ID)
+		if m.ID == r.model {
+			return nil
+		}
+	}
+	sort.Strings(ids)
+	joined := strings.Join(ids, ", ")
+	sysevent.Emitf(r.logger, "copilot_model_not_available",
+		"configured=%s available=[%s]", r.model, joined)
+	return fmt.Errorf("copilot model %q is not available; available models: [%s]",
+		r.model, joined)
 }
 
 // Stop shuts the dispatcher down (waiting for every per-card worker
