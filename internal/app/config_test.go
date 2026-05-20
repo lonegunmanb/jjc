@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -393,4 +394,107 @@ func TestRedactedMentionsEveryNonSensitiveField(t *testing.T) {
 				f.Name, out)
 		}
 	}
+}
+
+// TestHelpDoesNotLeakSecretsFromEnv pins the load-bearing fix from
+// the "-help echoed default values" security bug: when an operator
+// runs the gateway with the three TRELLO_* env vars set and asks
+// for --help, the rendered usage MUST NOT contain the env-derived
+// secret values. Go's flag package renders the *current* variable
+// contents as the (default ...) in usage, so the bug is reproduced
+// by simply registering the flag with the env-seeded variable as
+// the default. The fix registers them with an empty default and
+// overlays the env value AFTER flag.Parse via
+// overlaySecretFromEnv. This test runs --help and asserts none of
+// the three secret values surface.
+func TestHelpDoesNotLeakSecretsFromEnv(t *testing.T) {
+const (
+secret = "DO-NOT-LEAK-secret-9c0a4ff1d2b6"
+key    = "DO-NOT-LEAK-key-7b3e5d8a1f04"
+token  = "DO-NOT-LEAK-token-2e8a17c4b5f9"
+)
+t.Setenv("TRELLO_API_SECRET", secret)
+t.Setenv("TRELLO_API_KEY", key)
+t.Setenv("TRELLO_API_TOKEN", token)
+t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "env-router")
+t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
+t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
+
+var buf bytes.Buffer
+_, err := loadConfigWithOutput([]string{"cmd", "-h"}, &buf)
+// flag.ContinueOnError surfaces flag.ErrHelp from a -h request;
+// LoadConfig wraps it as a plain error. Either way, we expect
+// loadConfigWithOutput to NOT return nil here (the parse
+// short-circuits before validation), but the help text must be
+// present in the buffer regardless.
+if err == nil {
+t.Fatal("expected error from -h parse (flag.ErrHelp); got nil")
+}
+help := buf.String()
+if help == "" {
+t.Fatal("--help produced empty output; cannot assert on its contents")
+}
+for name, leaked := range map[string]string{
+"TRELLO_API_SECRET": secret,
+"TRELLO_API_KEY":    key,
+"TRELLO_API_TOKEN":  token,
+} {
+if strings.Contains(help, leaked) {
+t.Errorf("--help leaks %s env value into usage output; the flag's default must not echo the env var.\nleaked value: %q\nfull help:\n%s",
+name, leaked, help)
+}
+}
+}
+
+// TestHelpAdvertisesEnvOverridesForSecrets makes the operator-facing
+// affordance explicit: even though the secret flags register with an
+// empty default (per the leak-prevention rule above), the usage text
+// MUST still mention the matching env var name so an operator
+// reading -h knows TRELLO_API_SECRET / TRELLO_API_KEY /
+// TRELLO_API_TOKEN are alternative inputs.
+func TestHelpAdvertisesEnvOverridesForSecrets(t *testing.T) {
+var buf bytes.Buffer
+// No env values needed: we are checking the usage TEXT, not what
+// the flag resolves to. The function will return flag.ErrHelp
+// before validation runs, so the missing env vars do not matter.
+_, _ = loadConfigWithOutput([]string{"cmd", "-h"}, &buf)
+help := buf.String()
+for _, envName := range []string{"TRELLO_API_SECRET", "TRELLO_API_KEY", "TRELLO_API_TOKEN"} {
+if !strings.Contains(help, envName) {
+t.Errorf("--help should mention env var %s next to its corresponding flag; full help:\n%s", envName, help)
+}
+}
+}
+
+// TestEnvOverlayHonoursCLIPrecedence verifies the post-Parse overlay
+// preserves the documented CLI > env > default precedence for the
+// three secret flags. Without this guard, the help-leak fix could
+// accidentally clobber CLI-supplied values with env values (or vice
+// versa).
+func TestEnvOverlayHonoursCLIPrecedence(t *testing.T) {
+t.Setenv("TRELLO_API_SECRET", "env-secret")
+t.Setenv("TRELLO_API_KEY", "env-key")
+t.Setenv("TRELLO_API_TOKEN", "env-token")
+t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "env-router")
+t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
+t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
+
+cfg, err := LoadConfig([]string{
+"cmd",
+"--trello-api-secret", "cli-secret",
+// --trello-api-key intentionally omitted: env should win.
+"--trello-api-token", "cli-token",
+})
+if err != nil {
+t.Fatalf("LoadConfig: %v", err)
+}
+if cfg.TrelloSecret != "cli-secret" {
+t.Errorf("CLI must win over env for --trello-api-secret; got %q", cfg.TrelloSecret)
+}
+if cfg.TrelloAPIKey != "env-key" {
+t.Errorf("env must be picked up when CLI flag is absent; got %q", cfg.TrelloAPIKey)
+}
+if cfg.TrelloAPIToken != "cli-token" {
+t.Errorf("CLI must win over env for --trello-api-token; got %q", cfg.TrelloAPIToken)
+}
 }
