@@ -120,12 +120,15 @@ func TestReconcileBoardWebhookUpdatesExistingBoardWebhook(t *testing.T) {
 	})
 	defer done()
 
-	id, err := ReconcileBoardWebhook(context.Background(), c, "tok", "board-1", "https://formal-sent-saw-gpl.trycloudflare.com/")
+	id, createdNow, err := ReconcileBoardWebhook(context.Background(), c, "tok", "board-1", "https://formal-sent-saw-gpl.trycloudflare.com/")
 	if err != nil {
 		t.Fatalf("ReconcileBoardWebhook: %v", err)
 	}
 	if id != "hook-1" {
 		t.Fatalf("webhook id: got %q", id)
+	}
+	if createdNow {
+		t.Fatalf("updating existing webhook must not set createdNow=true")
 	}
 	if len(requests) != 2 || !strings.HasPrefix(requests[1], "PUT /webhooks/hook-1?") {
 		t.Fatalf("expected GET then PUT, got %#v", requests)
@@ -147,7 +150,7 @@ func TestReconcileBoardWebhookCreatesWhenMissing(t *testing.T) {
 			if q.Get("idModel") != "board-1" {
 				t.Fatalf("idModel query: got %q", q.Get("idModel"))
 			}
-			if q.Get("description") != "trello-copilot-gateway" {
+			if q.Get("description") != "jjc-gateway" {
 				t.Fatalf("description query: got %q", q.Get("description"))
 			}
 			_, _ = w.Write([]byte(`{"id":"new-hook","idModel":"board-1"}`))
@@ -157,12 +160,82 @@ func TestReconcileBoardWebhookCreatesWhenMissing(t *testing.T) {
 	})
 	defer done()
 
-	id, err := ReconcileBoardWebhook(context.Background(), c, "tok", "board-1", "https://formal-sent-saw-gpl.trycloudflare.com/")
+	id, createdNow, err := ReconcileBoardWebhook(context.Background(), c, "tok", "board-1", "https://formal-sent-saw-gpl.trycloudflare.com/")
 	if err != nil {
 		t.Fatalf("ReconcileBoardWebhook: %v", err)
 	}
 	if id != "new-hook" || !sawPost {
 		t.Fatalf("expected created webhook id, got id=%q sawPost=%v", id, sawPost)
+	}
+	if !createdNow {
+		t.Fatalf("newly created webhook must set createdNow=true")
+	}
+}
+
+func TestDeleteWebhookSendsCredentialedRequest(t *testing.T) {
+	var got *http.Request
+	c, _, done := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		got = r
+		if r.Method != http.MethodDelete || r.URL.Path != "/tokens/tok/webhooks/hook-1" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		_, _ = w.Write([]byte(`"hook-1"`))
+	})
+	defer done()
+
+	if err := c.DeleteWebhook(context.Background(), "tok", "hook-1"); err != nil {
+		t.Fatalf("DeleteWebhook: %v", err)
+	}
+	if got == nil {
+		t.Fatal("server did not receive request")
+	}
+	if q := got.URL.Query(); q.Get("key") != "k" || q.Get("token") != "tok" {
+		t.Errorf("credentials not appended: %s", got.URL.RawQuery)
+	}
+}
+
+// TestDeleteWebhookTreats404AsSuccess locks in the idempotency
+// guarantee the gateway's shutdown cleanup path relies on: if the
+// webhook is already gone (operator removed it by hand, or a previous
+// shutdown ran twice), DeleteWebhook must NOT surface an error.
+func TestDeleteWebhookTreats404AsSuccess(t *testing.T) {
+	c, _, done := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`not found`))
+	})
+	defer done()
+
+	if err := c.DeleteWebhook(context.Background(), "tok", "hook-1"); err != nil {
+		t.Fatalf("expected nil error on 404, got: %v", err)
+	}
+}
+
+func TestDeleteWebhookSurfacesOther4xx(t *testing.T) {
+	c, _, done := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`bad token`))
+	})
+	defer done()
+
+	err := c.DeleteWebhook(context.Background(), "tok", "hook-1")
+	if err == nil {
+		t.Fatal("expected error for 401")
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("error should reference status code, got: %v", err)
+	}
+}
+
+func TestDeleteWebhookRejectsEmptyArgs(t *testing.T) {
+	c, _, done := newTestServer(t, func(http.ResponseWriter, *http.Request) {
+		t.Fatal("server should not be hit when args are empty")
+	})
+	defer done()
+	if err := c.DeleteWebhook(context.Background(), "", "hook-1"); err == nil {
+		t.Error("empty token must be rejected")
+	}
+	if err := c.DeleteWebhook(context.Background(), "tok", ""); err == nil {
+		t.Error("empty webhook id must be rejected")
 	}
 }
 
