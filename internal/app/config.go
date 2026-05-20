@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/lonegunmanb/jjc/internal/app/tunnel"
@@ -50,24 +51,45 @@ type Config struct {
 const DefaultPlaybooksDirName = ".playbooks"
 
 func LoadConfig(args []string) (Config, error) {
+	return loadConfigWithOutput(args, nil)
+}
+
+// loadConfigWithOutput is the package-private implementation of
+// LoadConfig that lets a test redirect the flag-package's help/error
+// output (defaults to nil, meaning os.Stderr). Externalising this is
+// the only way to assert that --help never echoes secret env values
+// without spawning a subprocess.
+func loadConfigWithOutput(args []string, helpOutput io.Writer) (Config, error) {
+	// Secret-bearing fields are deliberately NOT seeded from the
+	// environment before flag.Parse. Doing so would let the flag
+	// package surface the real value in `-help` as the "default"
+	// (Go's flag package literally renders the current variable
+	// contents in usage). We register them with an empty string
+	// default for help output, then overlay TRELLO_API_SECRET /
+	// TRELLO_API_KEY / TRELLO_API_TOKEN below only when the operator
+	// did not pass the matching --flag on the command line. Precedence
+	// is unchanged: CLI > env > (required, no built-in default).
 	cfg := Config{
-		ListenAddr:     envOrDefault("LISTEN_ADDR", ":18790"),
-		TrelloSecret:   os.Getenv("TRELLO_API_SECRET"),
-		TrelloAPIKey:   os.Getenv("TRELLO_API_KEY"),
-		TrelloAPIToken: os.Getenv("TRELLO_API_TOKEN"),
-		CallbackURL:    os.Getenv("CALLBACK_URL"),
-		Tunnel:         envOrDefault("TRELLO_GATEWAY_TUNNEL", tunnel.Cloudflared),
-		CopilotModel:   envOrDefault("COPILOT_MODEL", DefaultCopilotModel),
-		RouterDir:      os.Getenv("WORKSPACE_TRELLO_ROUTER_DIR"),
-		PlaybooksDir:   envOrDefault("TRELLO_PLAYBOOKS_DIR", defaultPlaybooksDir()),
-		KanbanBoardID:  os.Getenv("TRELLO_KANBAN_BOARD_ID"),
+		ListenAddr:    envOrDefault("LISTEN_ADDR", ":18790"),
+		CallbackURL:   os.Getenv("CALLBACK_URL"),
+		Tunnel:        envOrDefault("TRELLO_GATEWAY_TUNNEL", tunnel.Cloudflared),
+		CopilotModel:  envOrDefault("COPILOT_MODEL", DefaultCopilotModel),
+		RouterDir:     os.Getenv("WORKSPACE_TRELLO_ROUTER_DIR"),
+		PlaybooksDir:  envOrDefault("TRELLO_PLAYBOOKS_DIR", defaultPlaybooksDir()),
+		KanbanBoardID: os.Getenv("TRELLO_KANBAN_BOARD_ID"),
 	}
 
 	fs := flag.NewFlagSet("gateway", flag.ContinueOnError)
+	if helpOutput != nil {
+		fs.SetOutput(helpOutput)
+	}
 	fs.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "listen address")
-	fs.StringVar(&cfg.TrelloSecret, "trello-api-secret", cfg.TrelloSecret, "Trello API secret")
-	fs.StringVar(&cfg.TrelloAPIKey, "trello-api-key", cfg.TrelloAPIKey, "Trello API key (used by the Go SDK to talk to api.trello.com)")
-	fs.StringVar(&cfg.TrelloAPIToken, "trello-api-token", cfg.TrelloAPIToken, "Trello API token (used by the Go SDK to talk to api.trello.com)")
+	// Register the three secret flags with an empty default so the
+	// help text never echoes the env-derived value (see the comment
+	// above). The env overlay happens after Parse.
+	fs.StringVar(&cfg.TrelloSecret, "trello-api-secret", "", "Trello API secret (also TRELLO_API_SECRET; never printed in --help)")
+	fs.StringVar(&cfg.TrelloAPIKey, "trello-api-key", "", "Trello API key, used by the Go SDK to talk to api.trello.com (also TRELLO_API_KEY; never printed in --help)")
+	fs.StringVar(&cfg.TrelloAPIToken, "trello-api-token", "", "Trello API token, used by the Go SDK to talk to api.trello.com (also TRELLO_API_TOKEN; never printed in --help)")
 	fs.StringVar(&cfg.CallbackURL, "callback-url", cfg.CallbackURL, "webhook callback URL used for signature verification")
 	fs.StringVar(&cfg.Tunnel, "tunnel", cfg.Tunnel, "tunnel provider: cloudflared or none")
 	fs.StringVar(&cfg.CopilotModel, "copilot-model", cfg.CopilotModel, "Copilot model to use for the agent session")
@@ -78,6 +100,15 @@ func LoadConfig(args []string) (Config, error) {
 	if err := fs.Parse(args[1:]); err != nil {
 		return Config{}, err
 	}
+
+	// Overlay env values for the secret flags only when the operator
+	// did not pass the matching CLI flag. Without this, env-only
+	// invocations (the README's primary path) would fail validation
+	// because the flags were registered with an empty default.
+	overlaySecretFromEnv(fs, &cfg.TrelloSecret, "trello-api-secret", "TRELLO_API_SECRET")
+	overlaySecretFromEnv(fs, &cfg.TrelloAPIKey, "trello-api-key", "TRELLO_API_KEY")
+	overlaySecretFromEnv(fs, &cfg.TrelloAPIToken, "trello-api-token", "TRELLO_API_TOKEN")
+
 	if cfg.Tunnel == "" {
 		cfg.Tunnel = tunnel.Cloudflared
 	}
@@ -87,6 +118,25 @@ func LoadConfig(args []string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// overlaySecretFromEnv copies the named env var into *dst when the
+// flag was NOT explicitly set on the command line. This keeps the
+// documented precedence (CLI > env > default) intact while letting
+// the flag's registered default stay empty so --help never echoes
+// the operator's real secret.
+func overlaySecretFromEnv(fs *flag.FlagSet, dst *string, flagName, envName string) {
+	setOnCLI := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == flagName {
+			setOnCLI = true
+		}
+	})
+	if !setOnCLI {
+		if v := os.Getenv(envName); v != "" {
+			*dst = v
+		}
+	}
 }
 
 func validateConfig(cfg Config) error {
