@@ -68,7 +68,20 @@ func main() {
 	fmt.Fprintf(os.Stdout, "trello-gateway: logging to %s\n", logger.LogFile())
 
 	runner := app.NewCopilotRunner(cfg.CopilotModel, logger)
-	runner.SetRouterDir(cfg.RouterDir)
+
+	// Resolve --config-src to a local directory once, up-front. When the
+	// operator passed a remote source (git::https://..., https://..., a
+	// GitHub shortcut, ...) go-getter v2 downloads the bundle into a
+	// per-process temp dir and the deferred cleanup removes it on exit
+	// so we never leave the operator's machine with orphan caches.
+	resolveCtx, resolveCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	configDir, configCleanup, configErr := app.ResolveConfigSrc(resolveCtx, cfg.ConfigSrc, logger)
+	resolveCancel()
+	if configErr != nil {
+		emitAndExit(logger, "config_src_resolve_failed", "src=%s err=%v", cfg.ConfigSrc, configErr)
+	}
+	defer configCleanup()
+	runner.SetConfigDir(configDir)
 
 	// Build the SDK-backed Trello client once at startup. Both the
 	// CardInfoFetcher (used to derive work_type from a card description)
@@ -95,7 +108,7 @@ func main() {
 	// startup; otherwise unknown_kanban_key errors would fire for the
 	// very first reference.
 	kanbanCtx, kanbanCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	hclPath := filepath.Join(cfg.RouterDir, "router.hcl")
+	hclPath := filepath.Join(configDir, "router.hcl")
 	resolved, kerr := kanban.LoadAndResolve(kanbanCtx, hclPath, cfg.KanbanBoardID,
 		newKanbanFetcher(trelloClient), logger)
 	kanbanCancel()
@@ -123,7 +136,7 @@ func main() {
 		len(resolved.WaitListIDs), len(resolved.UnclaimedListNames))
 	runner.SetKanbanView(resolved)
 
-	// Pre-render every playbook .md file in cfg.PlaybooksDir into a
+	// Pre-render every playbook .md file in configDir into a
 	// per-process temp directory; substitute every `{{<basename>}}`
 	// reference inside those files with the absolute path of that
 	// playbook in the same temp directory, and every `{{kanban.*}}`
@@ -132,7 +145,7 @@ func main() {
 	// / IDENTITY / WORKER / TOOLS / USER) are written first, so any
 	// user file with the same basename overrides the embedded copy.
 	renderer, err := prompttmpl.New(prompttmpl.Options{
-		PlaybooksDir:     cfg.PlaybooksDir,
+		PlaybooksDir:     configDir,
 		EmbeddedDefaults: prompts.Defaults(),
 		KanbanVars:       resolved.PromptVars(),
 		Logger:           logger,
@@ -147,12 +160,12 @@ func main() {
 	}()
 	runner.SetPlaybooks(renderer)
 
-	ruleCfg, ruleErr := router.LoadRuleConfig(hclPath, cfg.PlaybooksDir)
+	ruleCfg, ruleErr := router.LoadRuleConfig(hclPath, configDir)
 	if ruleErr != nil {
-		emitAndExit(logger, "rule_load_failed", "hcl_path=%s playbooks_dir=%s err=%v",
-			hclPath, cfg.PlaybooksDir, ruleErr)
+		emitAndExit(logger, "rule_load_failed", "hcl_path=%s config_dir=%s err=%v",
+			hclPath, configDir, ruleErr)
 	}
-	runner.SetRuleEngine(router.NewRuleEngine(ruleCfg, cfg.RouterDir, resolved, logger))
+	runner.SetRuleEngine(router.NewRuleEngine(ruleCfg, configDir, resolved, logger))
 
 	// Load the HCL `route {}` blocks the same way and hand the engine
 	// to the dispatcher so every Trello event is classified by the

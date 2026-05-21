@@ -1,7 +1,7 @@
 # =============================================================================
 # router.hcl — sample router configuration
 # -----------------------------------------------------------------------------
-# This file shows what `--router-dir/router.hcl` contains for the HCL-based
+# This file shows what `<config-src>/router.hcl` contains for the HCL-based
 # router. The routing + classification logic lives in:
 #
 #   internal/app/router/       (route engine, rule engine, github_issue)
@@ -300,7 +300,7 @@ route "unsupported_action_type" {
 # coalesce / ... see github.com/lonegunmanb/hclfuncs.
 #
 # Match semantics: top-down, first when==true wins. After a match, every name
-# in `prompts` is resolved against the playbooks directory (`--playbooks-dir`,
+# in `prompts` is resolved against the config-src directory (`--config-src`,
 # the only location the engine reads .md files from), goes through the same
 # pre-render pass that handles `{{<basename>}}` cross-references, and is
 # appended to the worker's system prompt under a section header

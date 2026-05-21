@@ -5,17 +5,19 @@ different stages of completeness:
 
 | Layer | What it covers | Status |
 |---|---|---|
-| `--playbooks-dir` (this layer) | Loading and pre-rendering the per-card playbook `.md` files. | **Implemented** (see `internal/app/prompttmpl/`). |
+| `--config-src` (this layer) | Loading and pre-rendering the per-card playbook `.md` files that live alongside `router.hcl` in the same directory. | **Implemented** (see `internal/app/prompttmpl/`). |
 | HCL router (`router.hcl`) | `kanban {}` shape, `route {}` event routing, `rule {}` playbook selection, `github_issue` HCL function. | **Implemented** (see `internal/app/kanban/` and `internal/app/router/`). |
 
 Files in this folder:
 
 - [router.hcl](./router.hcl) — sample HCL config (kanban / route /
-  rule / `github_issue`) loaded by the gateway from `--router-dir/router.hcl`.
+  rule / `github_issue`) loaded by the gateway from `<config-src>/router.hcl`.
 
 The actual in-repo collection of playbook `.md` files lives **outside this
 folder**, at the workspace root: [../../playbook/](../../playbook/). Point
-`--playbooks-dir` at that directory to use them.
+`--config-src` at a directory that holds both `router.hcl` and those
+`.md` files (or at a hashicorp/go-getter v2 source that publishes the
+same layout) to use them.
 
 ---
 
@@ -23,9 +25,13 @@ folder**, at the workspace root: [../../playbook/](../../playbook/). Point
 
 At startup the gateway:
 
-1. Resolves `--playbooks-dir` (precedence: flag > `TRELLO_PLAYBOOKS_DIR`
-   env > default `<cwd>/.playbooks`). The directory must exist; otherwise
-   the gateway logs `event=playbooks_dir_invalid` and exits non-zero.
+1. Resolves `--config-src` (precedence: flag > `JJC_CONFIG_SRC` env;
+   required, no default). If the value is a local path it must exist
+   and be a directory — the bundle ships `router.hcl` plus every
+   playbook `.md` at the top level. If the value is a remote
+   hashicorp/go-getter v2 source (git, https, github shortcut, ...)
+   JJC downloads it into a per-process temp directory at startup and
+   removes that directory on shutdown.
 2. Creates a per-process temp directory via
    `os.MkdirTemp("", "openclaw-playbooks-*")` and writes the path to the
    log as `event=playbooks_tempdir_created path=...`.
@@ -33,7 +39,7 @@ At startup the gateway:
    defaults: `BOOTSTRAP.md`, `IDENTITY.md`, `WORKER.md`, `TOOLS.md`,
    `USER.md` (these ship inside the binary, baked from
    [../../internal/app/prompts/](../../internal/app/prompts/)).
-4. Copies every `.md` file under `--playbooks-dir` on top — any user file
+4. Copies every `.md` file under `<config-src>` on top — any user file
    with the same basename **overrides** the embedded skeleton.
 5. For every file in the temp dir, substitutes each `{{<basename>}}`
    reference with the absolute path of `<basename>` inside the temp dir.
@@ -64,7 +70,7 @@ checklist…
 Rules for the `{{...}}` body:
 
 - Bare basename only: no `/`, no `\`, no `..`, must not be empty.
-- Must match a `.md` file present either in `--playbooks-dir` or in the
+- Must match a `.md` file present either in `<config-src>` or in the
   embedded defaults. Mismatches fail at startup with line/column info.
 - Whitespace inside the braces is trimmed: `{{ foo.md }}` is the same
   as `{{foo.md}}`.
@@ -79,7 +85,7 @@ Leave these alone — they have nothing to do with the playbooks temp dir:
 - Runtime files managed by the gateway itself, such as per-worker activity logs.
 - Glob patterns or pure narrative mentions of file names.
 
-> **Deprecation note: `<router-dir>/scripts/refresh-copilot-setup.ps1` is no
+> **Deprecation note: `<config-src>/scripts/refresh-copilot-setup.ps1` is no
 > longer required.** The AzureRM provider work_dir hook used to spawn an
 > ephemeral Copilot session whose only job was to invoke that script via
 > `pwsh -NoProfile -File ...`. As of [#13](https://github.com/lonegunmanb/trello-copilot/issues/13)
@@ -90,7 +96,7 @@ Leave these alone — they have nothing to do with the playbooks temp dir:
 > Windows, `bash + install-copilot-setup.sh` on macOS / Linux. The
 > refresh is synchronous (no LLM turn, no spawned session) and works on
 > any OS where `git` is on `$PATH` and either `pwsh` or `bash` is
-> available. Legacy helper scripts under `<router-dir>/scripts/` are no
+> available. Legacy helper scripts under `<config-src>/scripts/` are no
 > longer invoked by the gateway.
 
 ---
@@ -100,7 +106,8 @@ Leave these alone — they have nothing to do with the playbooks temp dir:
 The gateway's flat-file convention:
 
 ```
-<--playbooks-dir>/                # default <cwd>/.playbooks
+<--config-src>/                   # required, no default
+├── router.hcl                     # required: kanban {} + route {} + rule {} blocks
 ├── BOOTSTRAP.md                  # optional override of embedded default
 ├── IDENTITY.md                   # optional override of embedded default
 ├── WORKER.md                     # optional override of embedded default
@@ -137,17 +144,17 @@ Subdirectories are ignored. Only `.md` files are loaded.
 To use the playbooks shipped in this repo, run:
 
 ```powershell
-trello-openclaw-webhook-gateway.exe --playbooks-dir .\playbook
+jjc.exe --config-src .\playbook
 # or
-$env:TRELLO_PLAYBOOKS_DIR = "C:\path\to\playbook"
-trello-openclaw-webhook-gateway.exe
+$env:JJC_CONFIG_SRC = "C:\path\to\config-src"
+jjc.exe
 ```
 
 ---
 
 ## The HCL router
 
-[router.hcl](./router.hcl) shows the shape of `--router-dir/router.hcl`.
+[router.hcl](./router.hcl) shows the shape of `<config-src>/router.hcl`.
 It introduces three blocks:
 
 1. `kanban {}` — names the Trello lists by **role** (plan, action,
@@ -158,7 +165,7 @@ It introduces three blocks:
    signal.
 3. `rule {}` — given a matched card, picks which playbook(s) to feed to the worker.
    Playbook names are bare basenames (same convention as `{{...}}`
-   above) and the engine resolves them through the `--playbooks-dir`
+   above) and the engine resolves them through the `<config-src>`
    renderer described in the previous section.
 
 ### Tracking issues

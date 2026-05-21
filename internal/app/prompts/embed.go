@@ -1,9 +1,9 @@
 // Package prompts holds the five skeleton playbook fragments that ship
 // embedded inside the gateway binary. They serve as defaults the
 // prompttmpl renderer materialises into its per-process temp directory
-// at startup so the gateway runs even when --playbooks-dir is empty;
-// any same-name .md under the operator's --playbooks-dir overrides
-// them.
+// at startup so the gateway runs even when --config-src ships no
+// override; any same-name .md inside the operator's --config-src
+// bundle overrides them.
 //
 // The package surface is intentionally tiny: Defaults() returns the
 // basename → content map the renderer consumes, and that is it. The
@@ -34,7 +34,7 @@ var User string
 // their canonical bare basenames. The prompttmpl renderer materialises
 // each entry into the per-process temp directory at startup as a
 // fallback for operators who have not copied the skeleton files into
-// their own --playbooks-dir; any user file with the same basename
+// their own --config-src bundle; any user file with the same basename
 // overrides the embedded copy.
 func Defaults() map[string]string {
 	return map[string]string{

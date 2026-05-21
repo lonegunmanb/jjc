@@ -9,14 +9,17 @@ import (
 	"testing"
 )
 
-// setupPlaybooksDir creates an empty .playbooks directory in a per-test
-// temp dir and returns its path. Tests use this to satisfy the
-// playbooks-dir validation that requires the directory to exist.
-func setupPlaybooksDir(t *testing.T) string {
+// setupConfigSrc creates an empty directory in a per-test temp dir and
+// returns its path. Tests use this to provide a non-empty --config-src
+// value; LoadConfig itself does not stat the path (resolution happens
+// in ResolveConfigSrc at startup), so any non-empty string would work.
+// Keeping the path real makes the intent clear and lets tests evolve
+// to call ResolveConfigSrc directly without re-plumbing fixtures.
+func setupConfigSrc(t *testing.T) string {
 	t.Helper()
-	dir := filepath.Join(t.TempDir(), ".playbooks")
+	dir := filepath.Join(t.TempDir(), "config-src")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir playbooks: %v", err)
+		t.Fatalf("mkdir config-src: %v", err)
 	}
 	return dir
 }
@@ -29,8 +32,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("TRELLO_GATEWAY_TUNNEL", "none")
 	t.Setenv("COPILOT_MODEL", "env-model")
-	t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "env-router")
-	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
+	t.Setenv("JJC_CONFIG_SRC", setupConfigSrc(t))
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
 	t.Setenv("LOG_FILE", "env.log")
 
@@ -57,8 +59,8 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	if cfg.CopilotModel != "env-model" {
 		t.Fatalf("unexpected copilot model: %s", cfg.CopilotModel)
 	}
-	if cfg.RouterDir != "env-router" {
-		t.Fatalf("unexpected router dir: %s", cfg.RouterDir)
+	if cfg.ConfigSrc == "" {
+		t.Fatalf("expected config src from env, got empty")
 	}
 	if cfg.KanbanBoardID != "env-board" {
 		t.Fatalf("unexpected kanban board id: %s", cfg.KanbanBoardID)
@@ -76,11 +78,10 @@ func TestLoadConfigFlagOverridesEnv(t *testing.T) {
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("TRELLO_GATEWAY_TUNNEL", "none")
 	t.Setenv("COPILOT_MODEL", "env-model")
-	t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "env-router")
-	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
+	t.Setenv("JJC_CONFIG_SRC", setupConfigSrc(t))
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
 
-	cfg, err := LoadConfig([]string{"cmd", "--listen", ":8088", "--trello-api-secret", "flag-secret", "--copilot-model", "flag-model", "--router-dir", "flag-router", "--kanban-board-id", "flag-board", "--log-file", "flag.log"})
+	cfg, err := LoadConfig([]string{"cmd", "--listen", ":8088", "--trello-api-secret", "flag-secret", "--copilot-model", "flag-model", "--config-src", "flag-config", "--kanban-board-id", "flag-board", "--log-file", "flag.log"})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -94,8 +95,8 @@ func TestLoadConfigFlagOverridesEnv(t *testing.T) {
 	if cfg.CopilotModel != "flag-model" {
 		t.Fatalf("expected copilot model from flag, got %s", cfg.CopilotModel)
 	}
-	if cfg.RouterDir != "flag-router" {
-		t.Fatalf("expected router dir from flag, got %s", cfg.RouterDir)
+	if cfg.ConfigSrc != "flag-config" {
+		t.Fatalf("expected config src from flag, got %s", cfg.ConfigSrc)
 	}
 	if cfg.KanbanBoardID != "flag-board" {
 		t.Fatalf("expected kanban board id from flag, got %s", cfg.KanbanBoardID)
@@ -116,8 +117,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	t.Setenv("TRELLO_API_SECRET", "env-secret")
 	t.Setenv("TRELLO_API_KEY", "env-key")
 	t.Setenv("TRELLO_API_TOKEN", "env-token")
-	t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "env-router")
-	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
+	t.Setenv("JJC_CONFIG_SRC", setupConfigSrc(t))
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
 
 	cfg, err := LoadConfig([]string{"cmd"})
@@ -137,51 +137,33 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.CallbackURL != "" {
 		t.Fatalf("callback URL should be empty before auto-tunnel starts, got %q", cfg.CallbackURL)
 	}
-	if cfg.RouterDir != "env-router" {
-		t.Fatalf("expected router dir from env, got %q", cfg.RouterDir)
+	if cfg.ConfigSrc == "" {
+		t.Fatalf("expected config src from env, got empty")
 	}
 	if cfg.LogFile != "trellooperator.log" {
 		t.Fatalf("expected default log file trellooperator.log, got %q", cfg.LogFile)
 	}
 }
 
-func TestLoadConfigPlaybooksDirMissing(t *testing.T) {
+// TestLoadConfigConfigSrcRequired pins the requirement that --config-src /
+// JJC_CONFIG_SRC must be explicitly configured rather than silently falling
+// back to an operator-local path.
+func TestLoadConfigConfigSrcRequired(t *testing.T) {
 	t.Setenv("TRELLO_API_SECRET", "env-secret")
 	t.Setenv("TRELLO_API_KEY", "env-key")
 	t.Setenv("TRELLO_API_TOKEN", "env-token")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("TRELLO_GATEWAY_TUNNEL", "none")
-	t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "env-router")
-	t.Setenv("TRELLO_PLAYBOOKS_DIR", filepath.Join(t.TempDir(), "does-not-exist"))
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
+	// Explicitly empty JJC_CONFIG_SRC to prove there is no fallback default.
+	t.Setenv("JJC_CONFIG_SRC", "")
 
 	_, err := LoadConfig([]string{"cmd"})
 	if err == nil {
-		t.Fatal("expected error when playbooks-dir does not exist")
+		t.Fatal("expected error when config src is missing")
 	}
-}
-
-// TestLoadConfigRouterDirRequired pins the requirement that --router-dir /
-// WORKSPACE_TRELLO_ROUTER_DIR must be explicitly configured rather than
-// silently falling back to an operator-local path.
-func TestLoadConfigRouterDirRequired(t *testing.T) {
-	t.Setenv("TRELLO_API_SECRET", "env-secret")
-	t.Setenv("TRELLO_API_KEY", "env-key")
-	t.Setenv("TRELLO_API_TOKEN", "env-token")
-	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
-	t.Setenv("TRELLO_GATEWAY_TUNNEL", "none")
-	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
-	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
-	// Explicitly empty WORKSPACE_TRELLO_ROUTER_DIR to prove there is no
-	// fallback default.
-	t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "")
-
-	_, err := LoadConfig([]string{"cmd"})
-	if err == nil {
-		t.Fatal("expected error when router dir is missing")
-	}
-	if !strings.Contains(err.Error(), "router dir") {
-		t.Fatalf("error should mention router dir: %v", err)
+	if !strings.Contains(err.Error(), "config src") {
+		t.Fatalf("error should mention config src: %v", err)
 	}
 }
 
@@ -193,8 +175,7 @@ func TestLoadConfigKanbanBoardIDRequired(t *testing.T) {
 	t.Setenv("TRELLO_API_TOKEN", "env-token")
 	t.Setenv("CALLBACK_URL", "https://env.example.com/trello")
 	t.Setenv("TRELLO_GATEWAY_TUNNEL", "none")
-	t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "env-router")
-	t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
+	t.Setenv("JJC_CONFIG_SRC", setupConfigSrc(t))
 	// Intentionally do NOT set TRELLO_KANBAN_BOARD_ID.
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "")
 
@@ -213,8 +194,7 @@ func TestLoadConfigTunnelValidation(t *testing.T) {
 		t.Setenv("TRELLO_API_SECRET", "env-secret")
 		t.Setenv("TRELLO_API_KEY", "env-key")
 		t.Setenv("TRELLO_API_TOKEN", "env-token")
-		t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "env-router")
-		t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
+		t.Setenv("JJC_CONFIG_SRC", setupConfigSrc(t))
 		t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
 	}
 
@@ -270,8 +250,7 @@ func TestRedactedDoesNotLeakPrefix(t *testing.T) {
 		CallbackURL:    "https://example.com/trello",
 		Tunnel:         "none",
 		CopilotModel:   "m",
-		RouterDir:      "r",
-		PlaybooksDir:   "p",
+		ConfigSrc:      "c",
 		KanbanBoardID:  "b",
 		LogFile:        "trellooperator.log",
 	}
@@ -307,8 +286,7 @@ func TestRedactedCoversEverySensitiveField(t *testing.T) {
 		CallbackURL:    "url",
 		Tunnel:         "none",
 		CopilotModel:   "model",
-		RouterDir:      "router",
-		PlaybooksDir:   "playbooks",
+		ConfigSrc:      "config-src",
 		KanbanBoardID:  "board",
 		LogFile:        "trellooperator.log",
 	}
@@ -360,8 +338,7 @@ func TestRedactedMentionsEveryNonSensitiveField(t *testing.T) {
 		CallbackURL:    "REDACTED_TEST_URL",
 		Tunnel:         "REDACTED_TEST_TUNNEL",
 		CopilotModel:   "REDACTED_TEST_MODEL",
-		RouterDir:      "REDACTED_TEST_ROUTER",
-		PlaybooksDir:   "REDACTED_TEST_PLAYBOOKS",
+		ConfigSrc:      "REDACTED_TEST_CONFIG_SRC",
 		KanbanBoardID:  "REDACTED_TEST_BOARD",
 		LogFile:        "REDACTED_TEST_LOG_FILE",
 	}
@@ -408,42 +385,41 @@ func TestRedactedMentionsEveryNonSensitiveField(t *testing.T) {
 // overlaySecretFromEnv. This test runs --help and asserts none of
 // the three secret values surface.
 func TestHelpDoesNotLeakSecretsFromEnv(t *testing.T) {
-const (
-secret = "DO-NOT-LEAK-secret-9c0a4ff1d2b6"
-key    = "DO-NOT-LEAK-key-7b3e5d8a1f04"
-token  = "DO-NOT-LEAK-token-2e8a17c4b5f9"
-)
-t.Setenv("TRELLO_API_SECRET", secret)
-t.Setenv("TRELLO_API_KEY", key)
-t.Setenv("TRELLO_API_TOKEN", token)
-t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "env-router")
-t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
-t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
+	const (
+		secret = "DO-NOT-LEAK-secret-9c0a4ff1d2b6"
+		key    = "DO-NOT-LEAK-key-7b3e5d8a1f04"
+		token  = "DO-NOT-LEAK-token-2e8a17c4b5f9"
+	)
+	t.Setenv("TRELLO_API_SECRET", secret)
+	t.Setenv("TRELLO_API_KEY", key)
+	t.Setenv("TRELLO_API_TOKEN", token)
+	t.Setenv("JJC_CONFIG_SRC", setupConfigSrc(t))
+	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
 
-var buf bytes.Buffer
-_, err := loadConfigWithOutput([]string{"cmd", "-h"}, &buf)
-// flag.ContinueOnError surfaces flag.ErrHelp from a -h request;
-// LoadConfig wraps it as a plain error. Either way, we expect
-// loadConfigWithOutput to NOT return nil here (the parse
-// short-circuits before validation), but the help text must be
-// present in the buffer regardless.
-if err == nil {
-t.Fatal("expected error from -h parse (flag.ErrHelp); got nil")
-}
-help := buf.String()
-if help == "" {
-t.Fatal("--help produced empty output; cannot assert on its contents")
-}
-for name, leaked := range map[string]string{
-"TRELLO_API_SECRET": secret,
-"TRELLO_API_KEY":    key,
-"TRELLO_API_TOKEN":  token,
-} {
-if strings.Contains(help, leaked) {
-t.Errorf("--help leaks %s env value into usage output; the flag's default must not echo the env var.\nleaked value: %q\nfull help:\n%s",
-name, leaked, help)
-}
-}
+	var buf bytes.Buffer
+	_, err := loadConfigWithOutput([]string{"cmd", "-h"}, &buf)
+	// flag.ContinueOnError surfaces flag.ErrHelp from a -h request;
+	// LoadConfig wraps it as a plain error. Either way, we expect
+	// loadConfigWithOutput to NOT return nil here (the parse
+	// short-circuits before validation), but the help text must be
+	// present in the buffer regardless.
+	if err == nil {
+		t.Fatal("expected error from -h parse (flag.ErrHelp); got nil")
+	}
+	help := buf.String()
+	if help == "" {
+		t.Fatal("--help produced empty output; cannot assert on its contents")
+	}
+	for name, leaked := range map[string]string{
+		"TRELLO_API_SECRET": secret,
+		"TRELLO_API_KEY":    key,
+		"TRELLO_API_TOKEN":  token,
+	} {
+		if strings.Contains(help, leaked) {
+			t.Errorf("--help leaks %s env value into usage output; the flag's default must not echo the env var.\nleaked value: %q\nfull help:\n%s",
+				name, leaked, help)
+		}
+	}
 }
 
 // TestHelpAdvertisesEnvOverridesForSecrets makes the operator-facing
@@ -453,17 +429,17 @@ name, leaked, help)
 // reading -h knows TRELLO_API_SECRET / TRELLO_API_KEY /
 // TRELLO_API_TOKEN are alternative inputs.
 func TestHelpAdvertisesEnvOverridesForSecrets(t *testing.T) {
-var buf bytes.Buffer
-// No env values needed: we are checking the usage TEXT, not what
-// the flag resolves to. The function will return flag.ErrHelp
-// before validation runs, so the missing env vars do not matter.
-_, _ = loadConfigWithOutput([]string{"cmd", "-h"}, &buf)
-help := buf.String()
-for _, envName := range []string{"TRELLO_API_SECRET", "TRELLO_API_KEY", "TRELLO_API_TOKEN"} {
-if !strings.Contains(help, envName) {
-t.Errorf("--help should mention env var %s next to its corresponding flag; full help:\n%s", envName, help)
-}
-}
+	var buf bytes.Buffer
+	// No env values needed: we are checking the usage TEXT, not what
+	// the flag resolves to. The function will return flag.ErrHelp
+	// before validation runs, so the missing env vars do not matter.
+	_, _ = loadConfigWithOutput([]string{"cmd", "-h"}, &buf)
+	help := buf.String()
+	for _, envName := range []string{"TRELLO_API_SECRET", "TRELLO_API_KEY", "TRELLO_API_TOKEN"} {
+		if !strings.Contains(help, envName) {
+			t.Errorf("--help should mention env var %s next to its corresponding flag; full help:\n%s", envName, help)
+		}
+	}
 }
 
 // TestEnvOverlayHonoursCLIPrecedence verifies the post-Parse overlay
@@ -472,29 +448,28 @@ t.Errorf("--help should mention env var %s next to its corresponding flag; full 
 // accidentally clobber CLI-supplied values with env values (or vice
 // versa).
 func TestEnvOverlayHonoursCLIPrecedence(t *testing.T) {
-t.Setenv("TRELLO_API_SECRET", "env-secret")
-t.Setenv("TRELLO_API_KEY", "env-key")
-t.Setenv("TRELLO_API_TOKEN", "env-token")
-t.Setenv("WORKSPACE_TRELLO_ROUTER_DIR", "env-router")
-t.Setenv("TRELLO_PLAYBOOKS_DIR", setupPlaybooksDir(t))
-t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
+	t.Setenv("TRELLO_API_SECRET", "env-secret")
+	t.Setenv("TRELLO_API_KEY", "env-key")
+	t.Setenv("TRELLO_API_TOKEN", "env-token")
+	t.Setenv("JJC_CONFIG_SRC", setupConfigSrc(t))
+	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
 
-cfg, err := LoadConfig([]string{
-"cmd",
-"--trello-api-secret", "cli-secret",
-// --trello-api-key intentionally omitted: env should win.
-"--trello-api-token", "cli-token",
-})
-if err != nil {
-t.Fatalf("LoadConfig: %v", err)
-}
-if cfg.TrelloSecret != "cli-secret" {
-t.Errorf("CLI must win over env for --trello-api-secret; got %q", cfg.TrelloSecret)
-}
-if cfg.TrelloAPIKey != "env-key" {
-t.Errorf("env must be picked up when CLI flag is absent; got %q", cfg.TrelloAPIKey)
-}
-if cfg.TrelloAPIToken != "cli-token" {
-t.Errorf("CLI must win over env for --trello-api-token; got %q", cfg.TrelloAPIToken)
-}
+	cfg, err := LoadConfig([]string{
+		"cmd",
+		"--trello-api-secret", "cli-secret",
+		// --trello-api-key intentionally omitted: env should win.
+		"--trello-api-token", "cli-token",
+	})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.TrelloSecret != "cli-secret" {
+		t.Errorf("CLI must win over env for --trello-api-secret; got %q", cfg.TrelloSecret)
+	}
+	if cfg.TrelloAPIKey != "env-key" {
+		t.Errorf("env must be picked up when CLI flag is absent; got %q", cfg.TrelloAPIKey)
+	}
+	if cfg.TrelloAPIToken != "cli-token" {
+		t.Errorf("CLI must win over env for --trello-api-token; got %q", cfg.TrelloAPIToken)
+	}
 }

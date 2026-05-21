@@ -20,7 +20,7 @@ A single Go process binds three independent surfaces — Trello webhooks, the Gi
 2. **HCL router decides.** A declarative `router.hcl` (a `kanban {}` block + ordered `route {}` and `rule {}` blocks; see [examples/router/router.hcl](./examples/router/router.hcl) and [examples/router/README.md](./examples/router/README.md)) classifies the event against the operator-configured board: drop / dispatch / notify_departure / terminate, plus which playbook(s) to inline as the worker's system prompt.
 3. **Per-card Copilot session.** When a card needs a worker, JJC spawns or re-uses one Copilot SDK session **per card** (different cards run in parallel; the same card is strictly FIFO). The session's system prompt is assembled from:
    - the five embedded skeleton prompts ([BOOTSTRAP.md](./internal/app/prompts/BOOTSTRAP.md), [IDENTITY.md](./internal/app/prompts/IDENTITY.md), [WORKER.md](./internal/app/prompts/WORKER.md), [TOOLS.md](./internal/app/prompts/TOOLS.md), [USER.md](./internal/app/prompts/USER.md));
-   - any operator-supplied playbook `.md` under `--playbooks-dir` (overrides same-name embeds);
+   - any operator-supplied playbook `.md` under `--config-src` (overrides same-name embeds);
    - a `# CARD CONTEXT` block with `card_id`, `work_dir`, `work_type`, `github_repo`, `github_number`, `github_url`, and the resolved Trello list IDs for every role;
    - the rule-selected entry playbook inlined verbatim.
 4. **Worker acts.** The worker calls in-process Trello tools (`trello_card_get`, `trello_card_list`, `trello_card_comment`, `trello_card_move`, `trello_card_comments_since`, `trello_card_latest_comment`, `trello_board_lists`), reads the cloned repo at `<work_dir>`, drafts plans, runs experiments, opens PRs, and posts every conclusion back as a Trello comment prefixed with the operator-configured agent marker (default `[agent]:`).
@@ -51,11 +51,11 @@ The whole runtime is a single Go binary with no required external services beyon
 - **Slim payload extraction.** Free-form card text, comments, descriptions, board names and member names are dropped from the routing-time JSON; only id / type / list-after fields reach the router. Limits prompt-injection surface.
 - **Declarative HCL routing.** `kanban {}` describes the board roles. `route {}` decides what to do with each webhook event. `rule {}` selects the per-card playbook. A `github_issue(...)` HCL function extracts `(owner, repo, number, kind, url)` from the card's first description line. No hard-coded list names anywhere in code. See [examples/router/README.md](./examples/router/README.md) for the full schema.
 - **Startup kanban resolution.** Human-readable list names in `router.hcl` are resolved to stable Trello list IDs at startup against the configured board. The resolved IDs are injected into every worker's CARD CONTEXT (`kanban_plan_id`, `kanban_action_id`, `kanban_wait_plan_review_id`, …) so prompts and playbooks reference roles, not column names.
-- **Playbook template rendering** ([docs/playbook-template-variables.md](./docs/playbook-template-variables.md)). Every `.md` under `--playbooks-dir` is copied into a per-process temp directory and pre-rendered:
+- **Playbook template rendering** ([docs/playbook-template-variables.md](./docs/playbook-template-variables.md)). Every `.md` under `--config-src` is copied into a per-process temp directory and pre-rendered:
   - `{{<basename>.md}}` cross-references resolve to absolute paths in the temp dir;
   - `{{kanban.<role>.id}}` / `{{kanban.<role>.name}}` / `{{kanban.<category>.list_ids}}` / `{{kanban.agent_comment_prefix}}` / `{{kanban.agent_comment_prefixes}}` resolve from the operator-configured `kanban {}` block (full schema in [docs/playbook-template-variables.md §2](./docs/playbook-template-variables.md));
   - unknown `{{kanban.*}}` keys are a startup-fatal `unknown_kanban_key` error, so renamed columns or typo'd keys surface at boot, not at the first worker turn.
-- **Five embedded skeleton prompts** ship inside the binary as defaults and are overridden file-by-file by anything the operator drops into `--playbooks-dir`.
+- **Five embedded skeleton prompts** ship inside the binary as defaults and are overridden file-by-file by anything the operator drops into `--config-src`.
 - **Per-card serialised dispatch.** One worker queue per card; cross-card events run in parallel ([internal/app/dispatcher.go](./internal/app/dispatcher.go)).
 - **Native Trello tooling.** Workers get `trello_*` tools backed by the Go SDK — no PowerShell shell-out, no `curl` to `api.trello.com`.
 - **AzureRM provider `work_dir` hook.** When a per-card `work_dir` turns out to be a clone of `hashicorp/terraform-provider-azurerm`, JJC synchronously clones `WodansSon/terraform-azurerm-ai-assisted-development` and runs its installer (pwsh on Windows, bash on macOS / Linux) before the worker starts. No spawned LLM session for the refresh ([internal/app/aiassistedrefresh/](./internal/app/aiassistedrefresh/)).
@@ -88,7 +88,7 @@ The whole runtime is a single Go binary with no required external services beyon
 | [internal/app/repl.go](./internal/app/repl.go), [internal/app/tui.go](./internal/app/tui.go) | Operator interfaces. |
 | [docs/playbook-template-variables.md](./docs/playbook-template-variables.md) | Authoring contract for `{{kanban.*}}` template variables. |
 | [examples/router/](./examples/router/) | Sample `router.hcl` and an annotated walkthrough of the HCL surface. |
-| [playbook/](./playbook/) | In-repo collection of `.md` playbooks (gitignored under `playbook/*` — operators manage their own copies; point `--playbooks-dir` at this directory to use them). |
+| [playbook/](./playbook/) | In-repo collection of `.md` playbooks (gitignored under `playbook/*` — operators manage their own copies; point `--config-src` at this directory to use them). |
 
 ---
 
@@ -105,8 +105,7 @@ Both CLI flags and environment variables are supported. CLI flags take precedenc
 | `--callback-url` | `CALLBACK_URL` | | only with `--tunnel=none` | Public webhook callback URL registered in Trello. Must exactly match the URL Trello signs. Rejected with the default auto-tunnel path. |
 | `--tunnel` | `TRELLO_GATEWAY_TUNNEL` | `cloudflared` | | Tunnel provider. `cloudflared` starts a TryCloudflare quick tunnel, waits for its public URL, reconciles the Trello board webhook, and uses that URL for signature verification. `none` disables auto-tunnel/webhook management and requires `--callback-url`. |
 | `--copilot-model` | `COPILOT_MODEL` | `claude-opus-4.6-1m` | | Copilot model name used for worker sessions. |
-| `--router-dir` | `WORKSPACE_TRELLO_ROUTER_DIR` | | **yes** | Directory containing `router.hcl`. |
-| `--playbooks-dir` | `TRELLO_PLAYBOOKS_DIR` | `<cwd>/.playbooks` | **yes** | Directory containing the `.md` playbook files. Must exist and be a directory; missing files referenced via `{{<basename>}}` fail startup; unknown `{{kanban.*}}` keys fail startup. |
+| `--config-src` | `JJC_CONFIG_SRC` | | **yes** | Source of the JJC configuration bundle: a single directory (or any [hashicorp/go-getter v2](https://github.com/hashicorp/go-getter/tree/v2) URL such as `git::https://...`, `https://...`, `github.com/owner/repo`) that holds **both** `router.hcl` and every playbook `.md` file at the top level. Local directories are used in place. Remote sources are downloaded into a per-process temp directory at startup and removed on shutdown. |
 | `--kanban-board-id` | `TRELLO_KANBAN_BOARD_ID` | | **yes** | Trello board id (24-hex string from the board URL). The `kanban {}` block in `router.hcl` is resolved against this board's lists at startup. |
 
 ---
@@ -121,10 +120,10 @@ go install github.com/lonegunmanb/jjc@latest
 
 The binary is named `jjc`.
 
-### 2. Prepare the router-dir and playbooks-dir
+### 2. Prepare the config-src directory
 
-- Copy [examples/router/router.hcl](./examples/router/router.hcl) into `<router-dir>/router.hcl` and edit each `name = "..."` to match the open Trello list names on your board (or change `agent_comment_prefixes` to a non-default marker if you want — every prompt reads the active prefix from `{{kanban.agent_comment_prefix}}` at render time).
-- Either point `--playbooks-dir` at this repo's [playbook/](./playbook/) directory, or create your own directory with the playbooks you want. Any `.md` files are accepted; see [docs/playbook-template-variables.md](./docs/playbook-template-variables.md) for the full `{{kanban.*}}` schema and [examples/router/README.md](./examples/router/README.md) for the cross-playbook `{{<basename>}}` syntax.
+- Put both [`router.hcl`](./examples/router/router.hcl) and every playbook `.md` file you want to ship into a single directory (or publish them under one path of a remote source that hashicorp/go-getter v2 can fetch — git, https, github shortcuts, ...). Edit each `name = "..."` in `router.hcl` to match the open Trello list names on your board (or change `agent_comment_prefixes` to a non-default marker if you want — every prompt reads the active prefix from `{{kanban.agent_comment_prefix}}` at render time). See [docs/playbook-template-variables.md](./docs/playbook-template-variables.md) for the full `{{kanban.*}}` schema and [examples/router/README.md](./examples/router/README.md) for the cross-playbook `{{<basename>}}` syntax.
+- Point `--config-src` / `JJC_CONFIG_SRC` at that directory (local path) or at a remote URL. Remote sources are downloaded into a per-process temp directory at startup and removed on shutdown.
 
 ### 3. Run with environment variables (default quick tunnel)
 
@@ -134,8 +133,7 @@ export TRELLO_API_SECRET="your_trello_webhook_secret"
 export TRELLO_API_KEY="your_trello_api_key"
 export TRELLO_API_TOKEN="your_trello_api_token"
 export COPILOT_MODEL="claude-opus-4.6-1m"
-export WORKSPACE_TRELLO_ROUTER_DIR="/path/to/your/router-dir"
-export TRELLO_PLAYBOOKS_DIR="/path/to/your/playbooks-dir"
+export JJC_CONFIG_SRC="/path/to/your/config-src"
 export TRELLO_KANBAN_BOARD_ID="64xxxxxxxxxxxxxxxxxxxxxx"
 
 jjc
@@ -152,8 +150,7 @@ jjc \
   --trello-api-key "your_trello_api_key" \
   --trello-api-token "your_trello_api_token" \
   --copilot-model "claude-opus-4.6-1m" \
-  --router-dir "/path/to/your/router-dir" \
-  --playbooks-dir "/path/to/your/playbooks-dir" \
+  --config-src "/path/to/your/config-src" \
   --kanban-board-id "64xxxxxxxxxxxxxxxxxxxxxx"
 ```
 
@@ -170,8 +167,7 @@ jjc \
   --tunnel "none" \
   --callback-url "https://your-public-domain/" \
   --copilot-model "claude-opus-4.6-1m" \
-  --router-dir "/path/to/your/router-dir" \
-  --playbooks-dir "/path/to/your/playbooks-dir" \
+  --config-src "/path/to/your/config-src" \
   --kanban-board-id "64xxxxxxxxxxxxxxxxxxxxxx"
 ```
 

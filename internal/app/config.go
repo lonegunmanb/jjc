@@ -24,19 +24,17 @@ type Config struct {
 	CallbackURL    string
 	Tunnel         string
 	CopilotModel   string
-	// RouterDir is the directory containing router.hcl. Entry playbooks
-	// no longer live here — they are loaded from PlaybooksDir and
-	// pre-rendered into a process-temp directory at startup.
-	RouterDir string
-	// PlaybooksDir is the directory holding all .md playbook files
-	// (skeleton prompts and entry playbooks). Every .md file under it is
-	// copied into a process-level temp directory at startup, then each
-	// rendered file has its `{{<basename>}}` references substituted with
-	// the absolute temp-dir path of the named file. The directory MUST
-	// exist; missing target referenced via `{{...}}` causes startup to
-	// fail with event=playbook_render_failed. Override via
-	// TRELLO_PLAYBOOKS_DIR or --playbooks-dir.
-	PlaybooksDir string
+	// ConfigSrc is the source of the JJC configuration bundle that
+	// holds both router.hcl and every playbook .md file at the top
+	// level. It can be either a local directory path or any source
+	// understood by hashicorp/go-getter v2 (git::https://...,
+	// https://..., github.com/owner/repo, file://..., etc.).
+	//
+	// When ConfigSrc is not a local directory, ResolveConfigSrc
+	// downloads it into a per-process temp directory at startup and
+	// removes that directory at shutdown. Override via JJC_CONFIG_SRC
+	// or --config-src.
+	ConfigSrc string
 	// KanbanBoardID is the Trello board the gateway resolves list
 	// names against at startup (see internal/app/kanban). Sourced from
 	// --kanban-board-id / TRELLO_KANBAN_BOARD_ID. Required: an empty
@@ -48,11 +46,6 @@ type Config struct {
 	// trellooperator.log name for backward compatibility.
 	LogFile string
 }
-
-// DefaultPlaybooksDirName is the conventional default basename of the
-// playbooks source directory, looked up under the process's current
-// working directory. Override via TRELLO_PLAYBOOKS_DIR or --playbooks-dir.
-const DefaultPlaybooksDirName = ".playbooks"
 
 func LoadConfig(args []string) (Config, error) {
 	return loadConfigWithOutput(args, nil)
@@ -78,8 +71,7 @@ func loadConfigWithOutput(args []string, helpOutput io.Writer) (Config, error) {
 		CallbackURL:   os.Getenv("CALLBACK_URL"),
 		Tunnel:        envOrDefault("TRELLO_GATEWAY_TUNNEL", tunnel.Cloudflared),
 		CopilotModel:  envOrDefault("COPILOT_MODEL", DefaultCopilotModel),
-		RouterDir:     os.Getenv("WORKSPACE_TRELLO_ROUTER_DIR"),
-		PlaybooksDir:  envOrDefault("TRELLO_PLAYBOOKS_DIR", defaultPlaybooksDir()),
+		ConfigSrc:     os.Getenv("JJC_CONFIG_SRC"),
 		KanbanBoardID: os.Getenv("TRELLO_KANBAN_BOARD_ID"),
 		LogFile:       envOrDefault("LOG_FILE", sysevent.DefaultLogFileName),
 	}
@@ -98,8 +90,7 @@ func loadConfigWithOutput(args []string, helpOutput io.Writer) (Config, error) {
 	fs.StringVar(&cfg.CallbackURL, "callback-url", cfg.CallbackURL, "webhook callback URL used for signature verification")
 	fs.StringVar(&cfg.Tunnel, "tunnel", cfg.Tunnel, "tunnel provider: cloudflared or none")
 	fs.StringVar(&cfg.CopilotModel, "copilot-model", cfg.CopilotModel, "Copilot model to use for the agent session")
-	fs.StringVar(&cfg.RouterDir, "router-dir", cfg.RouterDir, "directory containing router.hcl")
-	fs.StringVar(&cfg.PlaybooksDir, "playbooks-dir", cfg.PlaybooksDir, "directory containing playbook .md files (default <cwd>/.playbooks)")
+	fs.StringVar(&cfg.ConfigSrc, "config-src", cfg.ConfigSrc, "local directory or hashicorp/go-getter v2 source containing router.hcl and every playbook .md file (also JJC_CONFIG_SRC); remote sources are downloaded to a per-process temp dir at startup and removed on shutdown")
 	fs.StringVar(&cfg.KanbanBoardID, "kanban-board-id", cfg.KanbanBoardID, "Trello board id whose lists the kanban {} block in router.hcl is resolved against")
 	fs.StringVar(&cfg.LogFile, "log-file", cfg.LogFile, "operator log file path")
 
@@ -170,11 +161,8 @@ func validateConfig(cfg Config) error {
 	if cfg.CopilotModel == "" {
 		return errors.New("missing copilot model, set --copilot-model or COPILOT_MODEL")
 	}
-	if cfg.RouterDir == "" {
-		return errors.New("missing router dir, set --router-dir or WORKSPACE_TRELLO_ROUTER_DIR")
-	}
-	if cfg.PlaybooksDir == "" {
-		return errors.New("missing playbooks dir, set --playbooks-dir or TRELLO_PLAYBOOKS_DIR")
+	if cfg.ConfigSrc == "" {
+		return errors.New("missing config src, set --config-src or JJC_CONFIG_SRC (a local directory or a hashicorp/go-getter v2 source containing router.hcl and playbook .md files)")
 	}
 	if cfg.KanbanBoardID == "" {
 		return errors.New("missing kanban board id, set --kanban-board-id or TRELLO_KANBAN_BOARD_ID")
@@ -182,22 +170,11 @@ func validateConfig(cfg Config) error {
 	if cfg.LogFile == "" {
 		return errors.New("missing log file, set --log-file or LOG_FILE")
 	}
-	info, err := os.Stat(cfg.PlaybooksDir)
-	if err != nil {
-		return fmt.Errorf("playbooks-dir %q invalid: %w", cfg.PlaybooksDir, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("playbooks-dir %q is not a directory", cfg.PlaybooksDir)
-	}
+	// ConfigSrc may be a remote URL (git::https://..., https://...),
+	// which obviously cannot be stat()ed here; validation that it
+	// resolves to a usable directory happens in ResolveConfigSrc at
+	// startup so the failure surfaces with a structured event.
 	return nil
-}
-
-func defaultPlaybooksDir() string {
-	wd, err := os.Getwd()
-	if err != nil {
-		return DefaultPlaybooksDirName
-	}
-	return wd + string(os.PathSeparator) + DefaultPlaybooksDirName
 }
 
 func envOrDefault(key, fallback string) string {
@@ -209,8 +186,8 @@ func envOrDefault(key, fallback string) string {
 }
 
 func (c Config) Redacted() string {
-	return fmt.Sprintf("listen=%s callback_url=%s tunnel=%s copilot_model=%s router_dir=%s playbooks_dir=%s kanban_board_id=%s log_file=%s trello_api_secret=%s trello_api_key=%s trello_api_token=%s",
-		c.ListenAddr, c.CallbackURL, c.Tunnel, c.CopilotModel, c.RouterDir, c.PlaybooksDir, c.KanbanBoardID, c.LogFile,
+	return fmt.Sprintf("listen=%s callback_url=%s tunnel=%s copilot_model=%s config_src=%s kanban_board_id=%s log_file=%s trello_api_secret=%s trello_api_key=%s trello_api_token=%s",
+		c.ListenAddr, c.CallbackURL, c.Tunnel, c.CopilotModel, c.ConfigSrc, c.KanbanBoardID, c.LogFile,
 		redact(c.TrelloSecret), redact(c.TrelloAPIKey), redact(c.TrelloAPIToken))
 }
 
