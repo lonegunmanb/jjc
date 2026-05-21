@@ -1,7 +1,7 @@
 # Playbook Template Variables — Authoring Specification
 
 > **Audience.** Anyone (human or autonomous agent) editing a `.md` file
-> under `--playbooks-dir` (typically [playbook/](../playbook/)) or under
+> under `--config-src` (typically [playbook/](../playbook/)) or under
 > the in-binary embedded defaults at [internal/app/prompts/](../internal/app/prompts/).
 > Read this document end-to-end **before** touching a playbook that contains
 > Trello list names, list IDs, or the literal `[agent]:` comment prefix.
@@ -180,7 +180,7 @@ succeeds and **before** any worker session is spawned. The order
 inside `internal/app/prompttmpl/` is:
 
 1. Materialise embedded defaults into the per-process temp dir.
-2. Overlay every `.md` file from `--playbooks-dir`.
+2. Overlay every `.md` file from `--config-src`.
 3. For every file in the temp dir, apply the substitution pass:
    - First, the existing `{{<basename>.md>}}` resolution.
    - Then, the new `{{kanban.*}}` resolution.

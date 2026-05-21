@@ -25,8 +25,9 @@ Trigger this skill when the user wants to:
   GitHub Copilot CLI auth);
 - export the required environment variables for a shell session or a
   service supervisor;
-- copy `examples/router/router.hcl` into a real `--router-dir` and point
-  `--playbooks-dir` at a valid playbooks directory;
+- copy `examples/router/router.hcl` and a set of playbook `.md` files
+  into a single `--config-src` directory (or publish them under one
+  go-getter v2 URL);
 - diagnose a failed first start (model-not-available, missing env vars,
   Trello 401, `cloudflared` not on PATH, etc.).
 
@@ -42,7 +43,8 @@ skill.
 2. **Trello side** — board, API key, token, webhook secret, board id.
 3. **GitHub Copilot side** — auth + model availability check.
 4. **Build / install the binary** — from source or `go install`.
-5. **Router + playbooks** — `router.hcl` and `--playbooks-dir` content.
+5. **Config-src bundle** — a single directory (or remote go-getter v2
+   URL) that holds both `router.hcl` and the playbook `.md` files.
 6. **Environment variables** — the full set, with safe-handling notes.
 7. **First run** — quick-tunnel vs `--tunnel=none`, expected log lines.
 8. **Verification** — what a healthy startup looks like; common errors.
@@ -195,15 +197,14 @@ id from `…/<slug>.json`, safe export patterns, and a `curl` /
 > > pre-named lists (`Need Attention`, `Pending PR`, `Analyze`,
 > > `Ready for plan review`, `In action`, `Ready for review`, `Done`),
 > > drop the matching `router.hcl` next to it, and persist both
-> > `TRELLO_KANBAN_BOARD_ID` and `WORKSPACE_TRELLO_ROUTER_DIR` for
-> > you.
+> > `TRELLO_KANBAN_BOARD_ID` and `JJC_CONFIG_SRC` for you.
 >
 > If yes, follow
 > [references/bootstrap-board-and-router.md](references/bootstrap-board-and-router.md)
-> end-to-end — that procedure subsumes §5 (router + playbooks) **and**
+> end-to-end — that procedure subsumes §5 (config-src bundle) **and**
 > half of §6 (it persists the two new env vars itself), so the next
 > stop after a successful bootstrap is whichever of `COPILOT_MODEL` /
-> `TRELLO_PLAYBOOKS_DIR` / `--callback-url` are still missing.
+> `--callback-url` are still missing.
 
 ## 3. GitHub Copilot side
 
@@ -252,14 +253,17 @@ Only deviate from `go install … @latest` in these specific cases:
   with `go build -o jjc ./` (or `go build -o jjc.exe ./` on Windows)
   and copy the resulting binary into the target's `PATH`.
 
-## 5. Router and playbooks directories
+## 5. Config-src bundle
 
-JJC needs two directories pointed at by env vars before it will start:
+JJC needs **one** directory (or go-getter v2 URL) pointed at by an env
+var before it will start. That directory must contain `router.hcl`
+**and** every playbook `.md` file selected by the `rule {}` blocks,
+all at the top level (subdirectories are ignored; only top-level
+`.md` files are loaded).
 
-| Env var | Flag | Contents |
-|---|---|---|
-| `WORKSPACE_TRELLO_ROUTER_DIR` | `--router-dir`     | Must contain a single `router.hcl` (the `kanban {}` + `route {}` + `rule {}` declarations). |
-| `TRELLO_PLAYBOOKS_DIR`        | `--playbooks-dir`  | Directory of `.md` playbooks selected by the `rule {}` blocks; the renderer reads only `.md` files at the top level. |
+| Env var          | Flag           | Contents |
+|------------------|----------------|----------|
+| `JJC_CONFIG_SRC` | `--config-src` | A local directory — or any hashicorp/go-getter v2 source (`git::https://...`, `https://...`, `github.com/owner/repo`, ...) — holding `router.hcl` (the `kanban {}` + `route {}` + `rule {}` declarations) and the playbook `.md` files. Remote sources are downloaded into a per-process temp directory at startup and removed on shutdown. |
 
 Two provisioning paths, depending on whether §2 already ran the
 bootstrap procedure:
@@ -267,10 +271,11 @@ bootstrap procedure:
 1. **Bootstrap path (recommended for new operators).** If §2 ended in
    the "no Trello board yet" branch, the operator should have followed
    [references/bootstrap-board-and-router.md](references/bootstrap-board-and-router.md),
-   which already created `<router-dir>/router.hcl` (a verbatim copy of
+   which already created `<config-src>/router.hcl` (a verbatim copy of
    [`examples/router/router.hcl`](../../../examples/router/router.hcl))
-   **and** persisted `WORKSPACE_TRELLO_ROUTER_DIR` for them. Skip
-   straight to picking `TRELLO_PLAYBOOKS_DIR` (next bullet) and on to
+   **and** persisted `JJC_CONFIG_SRC` for them. Drop the playbook
+   `.md` files you want to use into that same directory (or copy them
+   from [`playbook/`](../../../playbook/) wholesale) and continue to
    §6 for the remaining env vars.
 
 2. **Manual path (operator already has a board).** Pick any directory
@@ -280,22 +285,20 @@ bootstrap procedure:
    `kanban {}` block so it matches the **exact** Trello list names on
    the existing board. Renaming a list later only requires editing
    this one file — every playbook reads `{{kanban.<role>.name}}` at
-   render time. Then export `WORKSPACE_TRELLO_ROUTER_DIR` to the
-   absolute path of that directory (§6 has the OS-specific recipes).
+   render time. Drop the playbook `.md` files alongside `router.hcl`
+   (either the in-repo set from [`playbook/`](../../../playbook/) or
+   the operator's own collection). Then export `JJC_CONFIG_SRC` to
+   the absolute path of that directory (§6 has the OS-specific
+   recipes), **or** to a remote URL that publishes the same layout
+   (e.g. `git::https://github.com/me/jjc-config.git`).
 
-For `TRELLO_PLAYBOOKS_DIR`, two reasonable choices:
+The renderer is strict: any `{{kanban.*}}` key not declared in
+`router.hcl` is a startup-fatal `unknown_kanban_key` error; missing
+`{{<basename>}}` cross-references are also fatal.
 
-- **Use this repo's [`playbook/`](../../../playbook/) directory** for
-  the in-repo Azure / AVM / Terraform playbooks; clone the repo and
-  point `--playbooks-dir` at the absolute path of `playbook/`.
-- **Roll a private directory** populated with the operator's own
-  `.md` files. The renderer is strict: any `{{kanban.*}}` key not
-  declared in `router.hcl` is a startup-fatal `unknown_kanban_key`
-  error; missing `{{<basename>}}` cross-references are also fatal.
-
-After both directories exist and the env vars point at them, fall
-through to §6 to confirm every required env var is in the shell that
-will launch `jjc`.
+After the bundle exists and `JJC_CONFIG_SRC` points at it (or at a
+remote URL), fall through to §6 to confirm every required env var is
+in the shell that will launch `jjc`.
 
 ## 6. Environment variables
 
@@ -387,11 +390,10 @@ non-zero lengths. If any still show `MISSING`, the export landed in a
 different shell / scope than the one you just probed — repeat the
 right OS-specific recipe above.
 
-> The remaining required values (`COPILOT_MODEL`,
-> `WORKSPACE_TRELLO_ROUTER_DIR`, `TRELLO_PLAYBOOKS_DIR`, and optional
-> `LISTEN_ADDR` / `CALLBACK_URL` / `TRELLO_GATEWAY_TUNNEL`) export the
-> same way; §3, §5 and §7 will plug them into the same recipes as
-> their values become known.
+> The remaining required values (`COPILOT_MODEL`, `JJC_CONFIG_SRC`,
+> and optional `LISTEN_ADDR` / `CALLBACK_URL` / `TRELLO_GATEWAY_TUNNEL`)
+> export the same way; §3, §5 and §7 will plug them into the same
+> recipes as their values become known.
 
 ## 7. First run
 
@@ -407,7 +409,8 @@ TBD — symptom → cause → fix table, including:
 - `copilot_model_not_available` — model name drift between accounts;
 - `signature_invalid` — callback URL mismatch;
 - `cloudflared not found` — install path / `--tunnel=none` fallback;
-- `playbooks_dir … missing` / `unknown_kanban_key` — template errors;
+- `config_src_resolve_failed` / `unknown_kanban_key` — config-src or
+  template errors;
 - `worker_session_create_failed` after the AzureRM refresh hook.
 
 ---

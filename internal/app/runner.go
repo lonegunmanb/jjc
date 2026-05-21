@@ -38,13 +38,14 @@ type CopilotRunner struct {
 	tmpDir     string
 	dispatcher *Dispatcher
 
-	// routerDir is the directory containing the per-work_type entry
-	// playbook markdown files. cardInfoFetcher is used at session
-	// creation time to derive work_type from the Trello card description.
-	// Both are optional: when routerDir is empty or cardInfoFetcher is
+	// configDir is the resolved local directory containing router.hcl
+	// and every playbook .md file (see internal/app/ResolveConfigSrc).
+	// cardInfoFetcher is used at session creation time to derive
+	// work_type from the Trello card description.
+	// Both are optional: when configDir is empty or cardInfoFetcher is
 	// nil, the worker session falls back to deriving work_type itself
 	// per the legacy WORKER.md §0 bootstrap procedure.
-	routerDir          string
+	configDir          string
 	cardInfoFetcher    CardInfoFetcher
 	cardSignalsFetcher CardSignalsFetcher
 	ruleEngine         *router.RuleEngine
@@ -169,11 +170,11 @@ func (r *CopilotRunner) Model() string { return r.model }
 // Dispatcher exposes the underlying dispatcher (chiefly for tests).
 func (r *CopilotRunner) Dispatcher() *Dispatcher { return r.dispatcher }
 
-// SetRouterDir configures the directory used to look up per-work_type
-// entry playbook files. Pass "" to disable playbook injection (worker
-// must self-derive per WORKER.md §0 fallback). Must be called before
-// the first NewWorkerSession invocation.
-func (r *CopilotRunner) SetRouterDir(dir string) { r.routerDir = dir }
+// SetConfigDir configures the resolved local directory holding router.hcl
+// and the per-rule entry playbook .md files. Pass "" to disable playbook
+// injection (worker must self-derive per WORKER.md §0 fallback). Must be
+// called before the first NewWorkerSession invocation.
+func (r *CopilotRunner) SetConfigDir(dir string) { r.configDir = dir }
 
 // SetCardInfoFetcher installs the function used at session-creation time
 // to obtain the card's first description line (legacy fallback input).
@@ -535,7 +536,7 @@ func parseRawBody(rawBody []byte) map[string]any {
 // any failure so the worker can fall back to self-classification per
 // WORKER.md §0; non-fatal errors are logged.
 func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) workerBootstrap {
-	bs := workerBootstrap{cardID: cardID, routerDir: r.routerDir}
+	bs := workerBootstrap{cardID: cardID, configDir: r.configDir}
 	if r.cardSignalsFetcher == nil && r.cardInfoFetcher == nil {
 		sysevent.Emitf(r.logger, "worker_bootstrap_skip", "card_id=%s reason=no_fetcher", cardID)
 		return bs
@@ -594,9 +595,9 @@ func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) wo
 
 	// Prefer the pre-rendered copy in the playbooks temp dir (where any
 	// `{{<basename>}}` cross-references have already been substituted to
-	// absolute paths). Fall back to the legacy <router-dir>/<playbook>
-	// path so operators that run without --playbooks-dir wired up still
-	// get an entry playbook (just without template substitution).
+	// absolute paths). Fall back to the legacy <config-dir>/<playbook>
+	// path so operators that run without a pre-rendered set wired up
+	// still get an entry playbook (just without template substitution).
 	for _, playbook := range match.PromptNames {
 		if r.playbooks != nil {
 			if path, ok := r.playbooks.Path(playbook); ok {
@@ -612,12 +613,12 @@ func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) wo
 				continue
 			}
 		}
-		if r.routerDir == "" {
+		if r.configDir == "" {
 			sysevent.Emitf(r.logger, "worker_bootstrap_playbook_read_failed", "card_id=%s playbook=%s err=%v",
-				cardID, playbook, "router dir is empty")
+				cardID, playbook, "config dir is empty")
 			continue
 		}
-		playbookPath := filepath.Join(r.routerDir, playbook)
+		playbookPath := filepath.Join(r.configDir, playbook)
 		content, rerr := os.ReadFile(playbookPath)
 		if rerr != nil {
 			sysevent.Emitf(r.logger, "worker_bootstrap_playbook_read_failed", "card_id=%s path=%s err=%v",
@@ -625,7 +626,7 @@ func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) wo
 			continue
 		}
 		bs.playbooks = append(bs.playbooks, workerPlaybook{Name: playbook, Path: playbookPath, Content: string(content)})
-		sysevent.Emitf(r.logger, "worker_bootstrap_playbook_ready", "card_id=%s rule=%s playbook=%s playbook_bytes=%d source=router_dir",
+		sysevent.Emitf(r.logger, "worker_bootstrap_playbook_ready", "card_id=%s rule=%s playbook=%s playbook_bytes=%d source=config_dir",
 			cardID, match.RuleName, playbook, len(content))
 	}
 	if len(bs.playbooks) == 0 {
@@ -641,7 +642,7 @@ func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) wo
 // CARD CONTEXT section of the worker's system prompt.
 type workerBootstrap struct {
 	cardID         string
-	routerDir      string
+	configDir      string
 	firstLine      string
 	signals        router.CardSignals
 	classification CardClassification
@@ -689,7 +690,7 @@ func assembleWorkerSystemPrompt(cardID string, bs workerBootstrap, playbooks *pr
 // rendered system prompt).
 func loadSkeletonPrompts(playbooks *prompttmpl.Renderer) (bootstrap, identity, worker, tools, user, override string) {
 	if playbooks == nil {
-		// No --playbooks-dir wired in (only happens in unit tests):
+		// No --config-src wired in (only happens in unit tests):
 		// fall back to the embedded skeleton snapshots. There is no
 		// override path to surface in this branch.
 		return prompts.Bootstrap, prompts.Identity, prompts.EmbeddedWorker(), prompts.Tools, prompts.User, ""

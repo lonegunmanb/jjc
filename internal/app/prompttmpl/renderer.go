@@ -1,13 +1,14 @@
 // Package prompttmpl pre-renders playbook .md files at process startup.
 //
 // At startup the gateway is given a single playbooks source directory
-// (--playbooks-dir / TRELLO_PLAYBOOKS_DIR). All .md files under that
-// directory are copied into a process-level temp directory created via
-// os.MkdirTemp, then a tiny template pass rewrites every `{{<basename>}}`
-// reference inside the copied files to the absolute path of <basename>
-// in the same temp directory. The runner then loads the assembled worker
-// system prompt from these rendered files instead of the //go:embed
-// snapshots in internal/app/prompts.
+// (the resolved local view of --config-src / JJC_CONFIG_SRC, which
+// holds both router.hcl and every playbook .md file). All .md files
+// under that directory are copied into a process-level temp directory
+// created via os.MkdirTemp, then a tiny template pass rewrites every
+// `{{<basename>}}` reference inside the copied files to the absolute
+// path of <basename> in the same temp directory. The runner then loads
+// the assembled worker system prompt from these rendered files
+// instead of the //go:embed snapshots in internal/app/prompts.
 //
 // The renderer also seeds a small set of "embedded defaults" (the
 // skeleton prompts: BOOTSTRAP/IDENTITY/WORKER/TOOLS/USER) so the gateway
@@ -164,7 +165,7 @@ func New(opts Options) (*Renderer, error) {
 		// safe against an oversized .md, but a symlink target like
 		// /dev/zero or /etc/shadow could otherwise let a misconfigured
 		// PlaybooksDir leak host content into a worker prompt or stall
-		// startup. The intent of --playbooks-dir is "real .md files
+		// startup. The intent of --config-src is "real .md files
 		// here, period"; reflect that with an explicit Lstat check.
 		lst, lerr := os.Lstat(src)
 		if lerr != nil {
