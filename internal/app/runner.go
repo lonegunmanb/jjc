@@ -436,7 +436,13 @@ func (r *CopilotRunner) NewWorkerSession(ctx context.Context, cardID string, tra
 	if tracker != nil {
 		tracker.SetClassification(bs.classification)
 	}
-	systemPrompt := assembleWorkerSystemPrompt(cardID, bs, r.playbooks, r.kanbanView)
+	// Compute the work_dir up-front so the system prompt's CARD
+	// CONTEXT block and the SDK's WorkingDirectory below agree on a
+	// single canonical path. Prepare() recomputes the same join
+	// internally; this just lets us seed the prompt without waiting
+	// for the (potentially slow) clone + hooks to finish.
+	workDir := filepath.Join(r.preparer.BaseDir(), cardID)
+	systemPrompt := assembleWorkerSystemPrompt(cardID, workDir, bs, r.playbooks, r.kanbanView)
 	sysevent.Emitf(r.logger, "worker_session_create_attempt", "card_id=%s model=%s system_bytes=%d",
 		cardID, r.model, len(systemPrompt))
 
@@ -451,7 +457,16 @@ func (r *CopilotRunner) NewWorkerSession(ctx context.Context, cardID string, tra
 	if err != nil {
 		return nil, err
 	}
-	workDir := info.WorkDir
+	if info.WorkDir != workDir {
+		// Defensive guard: Prepare must agree with the pre-computed
+		// work_dir we baked into the system prompt. A mismatch means
+		// somebody changed Prepare's join logic without updating the
+		// caller; surface it loudly instead of silently shipping a
+		// prompt that disagrees with the SDK's WorkingDirectory.
+		sysevent.Emitf(r.logger, "worker_workdir_mismatch", "card_id=%s expected=%s got=%s",
+			cardID, workDir, info.WorkDir)
+		workDir = info.WorkDir
+	}
 	if tracker != nil {
 		tracker.SetWorkDir(workDir)
 	}
@@ -669,7 +684,7 @@ type workerPlaybook struct {
 // `kanban_<role>_id` values and `kanban_agent_comment_prefixes` so the
 // worker can reference list IDs by stable role name without the
 // legacy `TRELLO_*` env-var bridge.
-func assembleWorkerSystemPrompt(cardID string, bs workerBootstrap, playbooks *prompttmpl.Renderer, view *kanban.Resolved) string {
+func assembleWorkerSystemPrompt(cardID, workDir string, bs workerBootstrap, playbooks *prompttmpl.Renderer, view *kanban.Resolved) string {
 	bootstrap, identity, worker, tools, user, override := loadSkeletonPrompts(playbooks)
 	var b strings.Builder
 	if override != "" {
@@ -680,7 +695,7 @@ func assembleWorkerSystemPrompt(cardID string, bs workerBootstrap, playbooks *pr
 	writeSection(&b, "WORKER", worker)
 	writeSection(&b, "TOOLS", tools)
 	writeSection(&b, "USER", user)
-	writeSection(&b, "CARD CONTEXT", buildCardContext(bs, view))
+	writeSection(&b, "CARD CONTEXT", buildCardContext(workDir, bs, view))
 	return b.String()
 }
 
@@ -720,18 +735,18 @@ func readSkeleton(playbooks *prompttmpl.Renderer, name, fallback string) string 
 	return body
 }
 
-func buildCardContext(bs workerBootstrap, view *kanban.Resolved) string {
+func buildCardContext(workDir string, bs workerBootstrap, view *kanban.Resolved) string {
 	var b strings.Builder
 	b.WriteString("You have been spawned by the Trello webhook gateway as the dedicated worker ")
-	b.WriteString("for the following card. This metadata is authoritative — do not infer card_id, ")
+	b.WriteString("for the following card. This metadata is authoritative \u2014 do not infer card_id, ")
 	b.WriteString("matched_rule, or work_dir from any other source. The gateway has already prepared ")
 	b.WriteString("work_dir for you (mkdir + `git clone --depth 1` when a github_repo is attached) ")
-	b.WriteString("and fired every registered work_dir hook before this session was created — do ")
+	b.WriteString("and fired every registered work_dir hook before this session was created \u2014 do ")
 	b.WriteString("NOT re-run `git clone` or recreate the directory yourself.\n\n")
 	b.WriteString("- card_id: ")
 	b.WriteString(bs.cardID)
-	b.WriteString("\n- work_dir: C:\\project\\")
-	b.WriteString(bs.cardID)
+	b.WriteString("\n- work_dir: ")
+	b.WriteString(workDir)
 	b.WriteString("\n")
 
 	if bs.ruleName != "" {

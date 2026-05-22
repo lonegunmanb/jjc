@@ -107,6 +107,7 @@ Both CLI flags and environment variables are supported. CLI flags take precedenc
 | `--copilot-model` | `COPILOT_MODEL` | `claude-opus-4.6-1m` | | Copilot model name used for worker sessions. |
 | `--config-src` | `JJC_CONFIG_SRC` | | **yes** | Source of the JJC configuration bundle: a single directory (or any [hashicorp/go-getter v2](https://github.com/hashicorp/go-getter/tree/v2) URL such as `git::https://...`, `https://...`, `github.com/owner/repo`) that holds **both** `router.hcl` and every playbook `.md` file at the top level. Local directories are used in place. Remote sources are downloaded into a per-process temp directory at startup and removed on shutdown. |
 | `--kanban-board-id` | `TRELLO_KANBAN_BOARD_ID` | | **yes** | Trello board id (24-hex string from the board URL). The `kanban {}` block in `router.hcl` is resolved against this board's lists at startup. |
+| `--work-dir` | `JJC_WORK_DIR` | process CWD | | Parent directory under which each card's `work_dir` is created (`work_dir = <work-dir>/<card_id>`). Resolved to an absolute path before any worker session is started; must exist and be a directory. |
 
 ---
 

@@ -340,6 +340,7 @@ func TestRedactedMentionsEveryNonSensitiveField(t *testing.T) {
 		CopilotModel:   "REDACTED_TEST_MODEL",
 		ConfigSrc:      "REDACTED_TEST_CONFIG_SRC",
 		KanbanBoardID:  "REDACTED_TEST_BOARD",
+		WorkDir:        "REDACTED_TEST_WORK_DIR",
 		LogFile:        "REDACTED_TEST_LOG_FILE",
 	}
 	out := c.Redacted()

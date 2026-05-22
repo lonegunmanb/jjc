@@ -42,6 +42,15 @@ type Config struct {
 	// deployment never silently routes events with an un-resolved
 	// kanban view.
 	KanbanBoardID string
+	// WorkDir is the parent directory under which the gateway creates
+	// each per-card work_dir (work_dir = filepath.Join(WorkDir,
+	// cardID)). Sourced from --work-dir / JJC_WORK_DIR. When empty,
+	// main resolves it to the process's startup CWD via os.Getwd, then
+	// to its absolute form. Always stored as an absolute path so the
+	// Copilot SDK's WorkingDirectory check (which rejects relative
+	// paths) is happy and structured log lines agree on one canonical
+	// form.
+	WorkDir string
 	// LogFile is the operator log destination. Defaults to the historical
 	// trellooperator.log name for backward compatibility.
 	LogFile string
@@ -73,6 +82,7 @@ func loadConfigWithOutput(args []string, helpOutput io.Writer) (Config, error) {
 		CopilotModel:  envOrDefault("COPILOT_MODEL", DefaultCopilotModel),
 		ConfigSrc:     os.Getenv("JJC_CONFIG_SRC"),
 		KanbanBoardID: os.Getenv("TRELLO_KANBAN_BOARD_ID"),
+		WorkDir:       os.Getenv("JJC_WORK_DIR"),
 		LogFile:       envOrDefault("LOG_FILE", sysevent.DefaultLogFileName),
 	}
 
@@ -92,6 +102,7 @@ func loadConfigWithOutput(args []string, helpOutput io.Writer) (Config, error) {
 	fs.StringVar(&cfg.CopilotModel, "copilot-model", cfg.CopilotModel, "Copilot model to use for the agent session")
 	fs.StringVar(&cfg.ConfigSrc, "config-src", cfg.ConfigSrc, "local directory or hashicorp/go-getter v2 source containing router.hcl and every playbook .md file (also JJC_CONFIG_SRC); remote sources are downloaded to a per-process temp dir at startup and removed on shutdown")
 	fs.StringVar(&cfg.KanbanBoardID, "kanban-board-id", cfg.KanbanBoardID, "Trello board id whose lists the kanban {} block in router.hcl is resolved against")
+	fs.StringVar(&cfg.WorkDir, "work-dir", cfg.WorkDir, "parent directory under which each card's work_dir is created (work_dir = <work-dir>/<card_id>). Defaults to the gateway process's startup CWD. Resolved to an absolute path before any session is started. Also JJC_WORK_DIR.")
 	fs.StringVar(&cfg.LogFile, "log-file", cfg.LogFile, "operator log file path")
 
 	if err := fs.Parse(args[1:]); err != nil {
@@ -186,8 +197,8 @@ func envOrDefault(key, fallback string) string {
 }
 
 func (c Config) Redacted() string {
-	return fmt.Sprintf("listen=%s callback_url=%s tunnel=%s copilot_model=%s config_src=%s kanban_board_id=%s log_file=%s trello_api_secret=%s trello_api_key=%s trello_api_token=%s",
-		c.ListenAddr, c.CallbackURL, c.Tunnel, c.CopilotModel, c.ConfigSrc, c.KanbanBoardID, c.LogFile,
+	return fmt.Sprintf("listen=%s callback_url=%s tunnel=%s copilot_model=%s config_src=%s kanban_board_id=%s work_dir=%s log_file=%s trello_api_secret=%s trello_api_key=%s trello_api_token=%s",
+		c.ListenAddr, c.CallbackURL, c.Tunnel, c.CopilotModel, c.ConfigSrc, c.KanbanBoardID, c.WorkDir, c.LogFile,
 		redact(c.TrelloSecret), redact(c.TrelloAPIKey), redact(c.TrelloAPIToken))
 }
 

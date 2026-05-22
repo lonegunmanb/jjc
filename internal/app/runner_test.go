@@ -136,7 +136,7 @@ func TestMarkActionSeenRingDoesNotGrowUnbounded(t *testing.T) {
 }
 
 func TestAssembleWorkerSystemPromptContainsExpectedSections(t *testing.T) {
-	got := assembleWorkerSystemPrompt("the-card-id", workerBootstrap{cardID: "the-card-id"}, nil, nil)
+	got := assembleWorkerSystemPrompt("the-card-id", "/tmp/jjc/the-card-id", workerBootstrap{cardID: "the-card-id"}, nil, nil)
 	for _, must := range []string{"# BOOTSTRAP", "# IDENTITY", "# WORKER", "# TOOLS", "# USER", "# CARD CONTEXT", "the-card-id"} {
 		if !strings.Contains(got, must) {
 			t.Fatalf("worker system prompt missing %q", must)
@@ -168,7 +168,7 @@ func TestAssembleWorkerSystemPromptInlinesPlaybook(t *testing.T) {
 			Content: "# AZURERM ISSUE PLAYBOOK\n\nStep A: classify.\n",
 		}},
 	}
-	got := assembleWorkerSystemPrompt("card-1", bs, nil, nil)
+	got := assembleWorkerSystemPrompt("card-1", "/tmp/jjc/card-1", bs, nil, nil)
 	for _, must := range []string{
 		"matched_rule: azurerm_provider_issue",
 		"kind: issue",
@@ -189,7 +189,7 @@ func TestAssembleWorkerSystemPromptInlinesPlaybook(t *testing.T) {
 }
 
 func TestAssembleWorkerSystemPromptFallback(t *testing.T) {
-	got := assembleWorkerSystemPrompt("card-x", workerBootstrap{cardID: "card-x"}, nil, nil)
+	got := assembleWorkerSystemPrompt("card-x", "/tmp/jjc/card-x", workerBootstrap{cardID: "card-x"}, nil, nil)
 	if !strings.Contains(got, "Fall back to the WORKER.md §0 self-bootstrap") {
 		t.Fatalf("expected fallback notice, got:\n%s", got)
 	}
@@ -213,7 +213,7 @@ func TestAssembleWorkerSystemPromptInjectsKanbanIDs(t *testing.T) {
 		},
 		AgentCommentPrefixes: []string{"[agent]:", "[bot]:"},
 	}
-	got := assembleWorkerSystemPrompt("card-z", workerBootstrap{cardID: "card-z"}, nil, view)
+	got := assembleWorkerSystemPrompt("card-z", "/tmp/jjc/card-z", workerBootstrap{cardID: "card-z"}, nil, view)
 	mustContain := []string{
 		"kanban_board_id: B1",
 		"kanban_plan_id: L_PLAN",
@@ -253,7 +253,7 @@ func TestAssembleWorkerSystemPromptUsesRenderedSkeletons(t *testing.T) {
 	}
 	defer func() { _ = r.Cleanup() }()
 
-	got := assembleWorkerSystemPrompt("card-y", workerBootstrap{cardID: "card-y"}, r, nil)
+	got := assembleWorkerSystemPrompt("card-y", "/tmp/jjc/card-y", workerBootstrap{cardID: "card-y"}, r, nil)
 	if !strings.Contains(got, "custom worker body") {
 		t.Fatalf("expected user-supplied WORKER content; got:\n%s", got)
 	}

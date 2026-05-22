@@ -23,7 +23,7 @@ type WorkDirInfo struct {
 	CardID string
 
 	// WorkDir is the absolute path of the per-card working directory
-	// (currently always C:\project\<card_id>).
+	// (work_dir = filepath.Join(WorkDirPreparer.BaseDir(), cardID)).
 	WorkDir string
 
 	// Classification carries rule/GitHub metadata for the card.
@@ -107,8 +107,9 @@ type WorkDirPreparer struct {
 	gitRunner GitRunner
 	// baseDir is the parent directory under which each card's work_dir is
 	// created (work_dir = filepath.Join(baseDir, cardID)). Defaults to
-	// C:\project to match the convention baked into WORKER.md and the
-	// rest of the gateway. Tests override this with t.TempDir().
+	// the gateway process's startup CWD; main.go wires --work-dir /
+	// JJC_WORK_DIR through SetBaseDir before the first session is
+	// created. Tests override this with t.TempDir().
 	baseDir string
 	// cloneTimeout bounds a single `git clone` invocation. Zero means no
 	// timeout (the parent context still applies).
@@ -118,9 +119,16 @@ type WorkDirPreparer struct {
 	hooks []WorkDirHook
 }
 
-// NewWorkDirPreparer returns a preparer wired to the real git binary, the
-// canonical C:\project base directory, and a 60-second clone timeout.
-// Pass nil logger to use log.Default.
+// NewWorkDirPreparer returns a preparer wired to the real git binary,
+// the gateway process's startup CWD (resolved to an absolute path) as
+// the base directory, and a 60-second clone timeout. Pass nil logger
+// to use log.Default.
+//
+// The startup CWD is captured exactly once when the preparer is
+// constructed; if the process changes directory later, the preparer's
+// baseDir is unaffected. If os.Getwd fails (e.g. the directory was
+// removed out from under the process), the runtime falls back to
+// os.TempDir so the gateway can still start.
 func NewWorkDirPreparer(logger sysevent.Sink) *WorkDirPreparer {
 	if logger == nil {
 		logger = sysevent.Default()
@@ -128,20 +136,47 @@ func NewWorkDirPreparer(logger sysevent.Sink) *WorkDirPreparer {
 	return &WorkDirPreparer{
 		logger:       logger,
 		gitRunner:    defaultGitRunner,
-		baseDir:      `C:\project`,
+		baseDir:      defaultWorkDirBase(),
 		cloneTimeout: 60 * time.Second,
 	}
 }
 
+// defaultWorkDirBase returns the absolute path of the process's startup
+// CWD, falling back to os.TempDir if Getwd fails. Always returns a
+// non-empty absolute path so callers can use the value directly without
+// re-checking.
+func defaultWorkDirBase() string {
+	if cwd, err := os.Getwd(); err == nil {
+		if abs, err := filepath.Abs(cwd); err == nil {
+			return abs
+		}
+		return cwd
+	}
+	return os.TempDir()
+}
+
 // SetBaseDir overrides the parent directory under which each card's
 // work_dir is created. Empty string is rejected to avoid accidentally
-// creating work dirs in the gateway's CWD.
+// creating work dirs in the gateway's CWD. The supplied path is
+// resolved to an absolute path so downstream tool integrations (the
+// Copilot SDK rejects relative WorkingDirectory values) and structured
+// log lines agree on a single canonical form.
 func (p *WorkDirPreparer) SetBaseDir(dir string) {
 	if dir == "" {
 		return
 	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
 	p.baseDir = dir
 }
+
+// BaseDir returns the parent directory under which each card's
+// work_dir is created. Used by callers that need to render the
+// per-card path in user-facing strings (worker system prompt, dispatcher
+// cleanup instructions) so they cannot drift from the value Prepare
+// actually uses.
+func (p *WorkDirPreparer) BaseDir() string { return p.baseDir }
 
 // SetGitRunner installs a custom git invoker; intended for tests.
 func (p *WorkDirPreparer) SetGitRunner(g GitRunner) {
@@ -179,9 +214,9 @@ func (p *WorkDirPreparer) hooksSnapshot() []WorkDirHook {
 	return out
 }
 
-// Prepare ensures C:\project\<card_id> exists, optionally clones the
-// GitHub repo derived from the classification, then runs every registered
-// hook against the resulting WorkDirInfo.
+// Prepare ensures filepath.Join(baseDir, cardID) exists, optionally
+// clones the GitHub repo derived from the classification, then runs
+// every registered hook against the resulting WorkDirInfo.
 //
 // Errors from hook execution are logged but do not bubble up — a misbehaving
 // hook must not be able to brick worker session creation. Errors from the

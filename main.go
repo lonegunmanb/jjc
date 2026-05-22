@@ -83,6 +83,23 @@ func main() {
 	defer configCleanup()
 	runner.SetConfigDir(configDir)
 
+	// Resolve --work-dir to an absolute path once. Empty input falls
+	// back to the gateway process's startup CWD so a default install
+	// "just works" without the operator having to think about where
+	// per-card work_dirs land. The preparer also resolves to abs in
+	// SetBaseDir, but doing it here too lets us emit the resolved
+	// value in workdir_root_resolved and bail with a structured event
+	// when the operator passed something nonsensical (e.g. a regular
+	// file or a path on a missing volume) instead of failing
+	// per-session later.
+	workDirRoot, wdErr := resolveWorkDirRoot(cfg.WorkDir)
+	if wdErr != nil {
+		emitAndExit(logger, "workdir_root_invalid", "work_dir=%q err=%v", cfg.WorkDir, wdErr)
+	}
+	sysevent.Emitf(logger, "workdir_root_resolved", "work_dir=%s source=%s",
+		workDirRoot, workDirRootSource(cfg.WorkDir))
+	runner.WorkDirPreparer().SetBaseDir(workDirRoot)
+
 	// Build the SDK-backed Trello client once at startup. Both the
 	// CardInfoFetcher (used to derive work_type from a card description)
 	// and the per-session `trello_*` tools share this client — no more
@@ -331,4 +348,43 @@ func emitAndExit(s sysevent.Sink, token, format string, args ...any) {
 		Message: fmt.Sprintf(format, args...),
 	}))
 	os.Exit(1)
+}
+
+// resolveWorkDirRoot turns the operator-supplied --work-dir value into
+// an absolute path that exists and is a directory. Empty input falls
+// back to the process's startup CWD via os.Getwd. The function does
+// not create the directory: existing the requirement makes "default
+// install" the easy path and forces the operator to opt in explicitly
+// when picking a non-existent location.
+func resolveWorkDirRoot(input string) (string, error) {
+	candidate := input
+	if candidate == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("default to process CWD: %w", err)
+		}
+		candidate = cwd
+	}
+	abs, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", fmt.Errorf("resolve absolute path: %w", err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("stat %s: %w", abs, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s is not a directory", abs)
+	}
+	return abs, nil
+}
+
+// workDirRootSource describes where the work-dir root was sourced from
+// for the boot log so an operator can trace whether the gateway picked
+// up their --work-dir / JJC_WORK_DIR or fell back to the CWD default.
+func workDirRootSource(input string) string {
+	if input == "" {
+		return "process_cwd_default"
+	}
+	return "operator_supplied"
 }

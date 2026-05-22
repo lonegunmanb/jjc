@@ -32,6 +32,13 @@ playbook/*
 *.log
 tmp/
 
+# Per-card work_dirs. --work-dir defaults to the gateway process's
+# startup CWD, so running jjc inside the repo root creates one
+# 24-hex-named directory per Trello card. Match that shape so they
+# never end up in git status / git add even when an operator runs
+# jjc directly from the repo during local development.
+/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]/
+
 # Editor/IDE
 # .idea/
 # .vscode/

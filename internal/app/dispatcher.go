@@ -322,14 +322,19 @@ func (d *Dispatcher) Dispatch(ctx context.Context, eventID string, rawBody []byt
 
 	case RouteTerminate:
 		d.mu.Lock()
-		_, ok := d.workers[decision.CardID]
+		handle, ok := d.workers[decision.CardID]
 		d.mu.Unlock()
 		if !ok {
 			sysevent.Emitf(d.logger, "terminate_no_worker", "event_id=%s card_id=%s reason=%s",
 				eventID, decision.CardID, decision.Reason)
 			return nil
 		}
-		prompt := assembleTerminateNotice(rawBody, mustSlim(rawBody), decision.Reason)
+		workDir := ""
+		if handle.tracker != nil {
+			status, _ := handle.tracker.Snapshot()
+			workDir = status.WorkDir
+		}
+		prompt := assembleTerminateNotice(rawBody, mustSlim(rawBody), decision.Reason, workDir)
 		return d.enqueue(ctx, decision.CardID, dispatchMessage{
 			kind:    kindTerminate,
 			eventID: eventID,
@@ -630,7 +635,14 @@ func assembleDepartureNotice(rawBody, slimBody []byte, listAfter string) string 
 // assembleTerminateNotice builds the final user message sent to a worker
 // before its session is disconnected. The worker is asked to clean up
 // experiment resources, delete its work directory, and finish.
-func assembleTerminateNotice(rawBody, slimBody []byte, reason string) string {
+//
+// workDir is the absolute path the dispatcher recorded for this worker
+// (from the ActivityTracker). It must be passed in rather than hard-coded
+// because the gateway's work-dir root is now operator-configurable via
+// --work-dir / JJC_WORK_DIR; rendering a literal C:\project here would
+// send Linux operators (and anyone with a custom root) chasing the wrong
+// path.
+func assembleTerminateNotice(rawBody, slimBody []byte, reason, workDir string) string {
 	var b strings.Builder
 	b.WriteString("# TASK (FINAL)\n\n")
 	b.WriteString("This card has reached a terminal state (")
@@ -638,8 +650,13 @@ func assembleTerminateNotice(rawBody, slimBody []byte, reason string) string {
 	b.WriteString("). This is your final user turn. Do the following before responding:\n\n")
 	b.WriteString("1. Stop any in-flight work that is not strictly cleanup.\n")
 	b.WriteString("2. Tear down every cloud / local experiment resource you provisioned.\n")
-	b.WriteString("3. Delete your work directory at `C:\\project\\<card_id>` (use the card_id ")
-	b.WriteString("from your system prompt).\n")
+	if workDir != "" {
+		b.WriteString("3. Delete your work directory at `")
+		b.WriteString(workDir)
+		b.WriteString("`.\n")
+	} else {
+		b.WriteString("3. Delete your work directory (the absolute path is in `work_dir` in your system prompt).\n")
+	}
 	b.WriteString("4. Reply with a short summary of what you cleaned up. After this turn, ")
 	b.WriteString("your session will be disconnected.\n\n")
 	b.WriteString("## Human-readable summary\n\n")
