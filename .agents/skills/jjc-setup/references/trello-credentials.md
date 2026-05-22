@@ -181,17 +181,98 @@ export TRELLO_API_SECRET='<paste-oauth-secret-here>'
 export TRELLO_KANBAN_BOARD_ID='<24-hex-board-id>'
 ```
 
-### Persisted (only after the per-session run works)
+### Ask the user whether to persist
 
-- Linux / macOS: append the same `export` lines to `~/.bashrc` /
-  `~/.zshrc`, or — better — keep them in a per-project `.env` loaded
-  by `direnv`. Never commit the file.
-- Windows: use `[Environment]::SetEnvironmentVariable(name, value, 'User')`
-  to store at the user scope (no admin needed). Equivalent GUI path:
-  *System Properties → Environment Variables → User variables*.
+After the per-session export works (run §7 to confirm), **the agent
+must explicitly ask the user whether they want these four variables
+persisted across shells / reboots, and never persist silently**. Re-using
+the same secrets across days/projects without re-pasting them is the
+whole reason persistence exists, but it also writes credentials to disk
+in a location the user may not expect — so the choice must be theirs.
 
-After exporting, re-run the detection snippet from §1 in a fresh shell
-to confirm all four show `set` with non-zero length.
+Suggested phrasing for the agent:
+
+> The four Trello variables are set for this shell only. Would you like
+> me to persist them so future shells / reboots pick them up
+> automatically? (Type **yes** to persist, **no** to keep them
+> session-only.)
+
+- **User says no** → stop here. Re-running §1 in a fresh shell will
+  show them MISSING, which is the intended behaviour.
+- **User says yes** → use the per-OS snippet below. Pick the snippet
+  that matches the host the user is on (detect via `$IsWindows` /
+  `uname -s` if unsure). **Never run the wrong-OS snippet "just in
+  case"** — `setx`-style writes on Linux or `~/.bashrc` edits on
+  Windows are both noisy failures.
+
+### Persist on Windows
+
+Use `[Environment]::SetEnvironmentVariable(name, value, 'User')` — it
+writes to the User scope in the registry (no admin needed) and is
+picked up by every new PowerShell, cmd, and GUI-launched process.
+`setx` works too but truncates at 1024 characters and triggers a
+broadcast that VS Code / IntelliJ are slow to notice; prefer the .NET
+call.
+
+```powershell
+[Environment]::SetEnvironmentVariable('TRELLO_API_KEY',         $env:TRELLO_API_KEY,         'User')
+[Environment]::SetEnvironmentVariable('TRELLO_API_TOKEN',       $env:TRELLO_API_TOKEN,       'User')
+[Environment]::SetEnvironmentVariable('TRELLO_API_SECRET',      $env:TRELLO_API_SECRET,      'User')
+[Environment]::SetEnvironmentVariable('TRELLO_KANBAN_BOARD_ID', $env:TRELLO_KANBAN_BOARD_ID, 'User')
+```
+
+Equivalent GUI path (only if PowerShell is unavailable): *System
+Properties → Environment Variables → User variables → New…*.
+
+To remove later: pass `$null` as the value (or use the GUI's *Delete*).
+
+### Persist on Linux / macOS
+
+Append `export` lines to the user's shell rc (`~/.bashrc` for bash,
+`~/.zshrc` for zsh). The snippet below is idempotent — re-running it
+replaces an existing JJC block instead of appending duplicates:
+
+```bash
+RC_FILE="$HOME/.bashrc"          # or "$HOME/.zshrc" for zsh users
+BEGIN='# >>> jjc trello creds >>>'
+END='# <<< jjc trello creds <<<'
+
+# Remove any previous JJC block so re-runs don't accumulate.
+if [ -f "$RC_FILE" ] && grep -qF "$BEGIN" "$RC_FILE"; then
+    sed -i.bak "/$BEGIN/,/$END/d" "$RC_FILE"
+fi
+
+cat >>"$RC_FILE" <<EOF
+
+$BEGIN
+export TRELLO_API_KEY='$TRELLO_API_KEY'
+export TRELLO_API_TOKEN='$TRELLO_API_TOKEN'
+export TRELLO_API_SECRET='$TRELLO_API_SECRET'
+export TRELLO_KANBAN_BOARD_ID='$TRELLO_KANBAN_BOARD_ID'
+$END
+EOF
+
+echo "Wrote JJC Trello block to $RC_FILE; open a new shell to pick up."
+```
+
+> **Better alternative for project-scoped credentials**: keep the four
+> values in a per-project `.env` and load them via
+> [`direnv`](https://direnv.net) (`echo 'dotenv' > .envrc && direnv
+> allow`). This scopes the secrets to the directory you actually run
+> `jjc` from instead of leaking them into every interactive shell.
+> **Never commit the `.env` file** — add it to `.gitignore` first.
+
+To remove later: delete the `# >>> jjc trello creds >>>` … `# <<< jjc
+trello creds <<<` block from the rc file (or the `.env`).
+
+### Verify persistence
+
+After either path, **open a brand-new shell** (close + reopen the
+terminal — sourcing the rc file is not enough on Windows) and re-run
+the §1 detection snippet. All four must come back `set` with non-zero
+length. If anything still shows `MISSING`, the persistence write hit
+the wrong scope (`Machine` vs `User`, wrong rc file for the active
+shell, or an editor that escaped a single quote).
 
 ---
 
