@@ -2,6 +2,19 @@ module github.com/lonegunmanb/jjc
 
 go 1.25.4
 
+// Temporary fork pin: upstream github/copilot-sdk@v0.3.0 declares
+// PingResponse.Timestamp as int64, but the Linux Copilot CLI (1.0.51)
+// emits `timestamp` as an ISO 8601 JSON string, so Client.Start fails
+// with `json: cannot unmarshal string into Go struct field
+// PingResponse.timestamp of type int64`. The fork's v0.3.2 is upstream
+// v0.3.0 with a single PingResponse.UnmarshalJSON patch on top (no
+// other API changes); drop this replace once upstream merges
+// https://github.com/github/copilot-sdk/issues/1356.
+//
+// Note: v0.3.1 of the fork was bad (wrong baseline) and proxy.golang.org
+// permanently cached it; we re-tagged the corrected commit as v0.3.2.
+replace github.com/github/copilot-sdk/go => github.com/lonegunmanb/copilot-sdk/go v0.3.2
+
 require (
 	github.com/catppuccin/go v0.3.0
 	github.com/charmbracelet/bubbletea v1.3.10
