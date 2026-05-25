@@ -730,10 +730,9 @@ func (d *Dispatcher) Snapshot(cardID string) (WorkerStatus, []ActivityEntry, boo
 		return WorkerStatus{}, nil, false
 	}
 	// Read the inbox depth while still holding d.mu so a concurrent
-	// DeleteWorker / Stop cannot close the channel beneath us. The
-	// tracker.Snapshot call also runs under the lock for the same
-	// reason: it touches activity-log state that DeleteWorker tears
-	// down via tracker.Close once the worker goroutine returns.
+	// DeleteWorker cannot tear down the tracker (and the activity-log
+	// state it owns) beneath us. tracker.Snapshot also runs under the
+	// lock for the same reason.
 	depth := len(h.inbox)
 	tracker := h.tracker
 	d.mu.Unlock()
