@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -22,8 +23,7 @@ type WorkDirInfo struct {
 	// CardID is the Trello card id this work_dir belongs to.
 	CardID string
 
-	// WorkDir is the absolute path of the per-card working directory
-	// (currently always C:\project\<card_id>).
+	// WorkDir is the absolute path of the per-card working directory.
 	WorkDir string
 
 	// Classification carries rule/GitHub metadata for the card.
@@ -106,9 +106,8 @@ type WorkDirPreparer struct {
 	logger    sysevent.Sink
 	gitRunner GitRunner
 	// baseDir is the parent directory under which each card's work_dir is
-	// created (work_dir = filepath.Join(baseDir, cardID)). Defaults to
-	// C:\project to match the convention baked into WORKER.md and the
-	// rest of the gateway. Tests override this with t.TempDir().
+	// created (work_dir = filepath.Join(baseDir, cardID)). Tests override
+	// this with t.TempDir().
 	baseDir string
 	// cloneTimeout bounds a single `git clone` invocation. Zero means no
 	// timeout (the parent context still applies).
@@ -119,8 +118,8 @@ type WorkDirPreparer struct {
 }
 
 // NewWorkDirPreparer returns a preparer wired to the real git binary, the
-// canonical C:\project base directory, and a 60-second clone timeout.
-// Pass nil logger to use log.Default.
+// per-OS default base directory, and a 60-second clone timeout. Pass nil
+// logger to use log.Default.
 func NewWorkDirPreparer(logger sysevent.Sink) *WorkDirPreparer {
 	if logger == nil {
 		logger = sysevent.Default()
@@ -128,9 +127,16 @@ func NewWorkDirPreparer(logger sysevent.Sink) *WorkDirPreparer {
 	return &WorkDirPreparer{
 		logger:       logger,
 		gitRunner:    defaultGitRunner,
-		baseDir:      `C:\project`,
+		baseDir:      defaultWorkDirBase(runtime.GOOS),
 		cloneTimeout: 60 * time.Second,
 	}
+}
+
+func defaultWorkDirBase(goos string) string {
+	if goos == "windows" {
+		return `C:\project`
+	}
+	return "/var/lib/jjc/work"
 }
 
 // SetBaseDir overrides the parent directory under which each card's
@@ -179,9 +185,9 @@ func (p *WorkDirPreparer) hooksSnapshot() []WorkDirHook {
 	return out
 }
 
-// Prepare ensures C:\project\<card_id> exists, optionally clones the
-// GitHub repo derived from the classification, then runs every registered
-// hook against the resulting WorkDirInfo.
+// Prepare ensures the per-card work_dir exists, optionally clones the GitHub
+// repo derived from the classification, then runs every registered hook
+// against the resulting WorkDirInfo.
 //
 // Errors from hook execution are logged but do not bubble up — a misbehaving
 // hook must not be able to brick worker session creation. Errors from the
@@ -201,7 +207,11 @@ func (p *WorkDirPreparer) Prepare(ctx context.Context, cardID string, c CardClas
 		return WorkDirInfo{}, fmt.Errorf("prepare workdir: %w", err)
 	}
 
-	workDir := filepath.Join(p.baseDir, cardID)
+	baseDir := p.baseDir
+	if baseDir == "" {
+		baseDir = defaultWorkDirBase(runtime.GOOS)
+	}
+	workDir := filepath.Join(baseDir, cardID)
 	info := WorkDirInfo{
 		CardID:         cardID,
 		WorkDir:        workDir,

@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -60,6 +61,26 @@ func newPreparerForTest(t *testing.T) (*WorkDirPreparer, *stubGitRunner) {
 	stub := &stubGitRunner{}
 	p.SetGitRunner(stub.run)
 	return p, stub
+}
+
+func TestDefaultWorkDirBasePerOS(t *testing.T) {
+	if got := defaultWorkDirBase("windows"); got != `C:\project` {
+		t.Fatalf("windows default work dir base = %q", got)
+	}
+	if got := defaultWorkDirBase("linux"); got != "/var/lib/jjc/work" {
+		t.Fatalf("linux default work dir base = %q", got)
+	}
+	if got := defaultWorkDirBase("darwin"); got != "/var/lib/jjc/work" {
+		t.Fatalf("darwin default work dir base = %q", got)
+	}
+}
+
+func TestNewWorkDirPreparerUsesDefaultWorkDirBase(t *testing.T) {
+	p := NewWorkDirPreparer(silentLogger())
+	want := defaultWorkDirBase(runtime.GOOS)
+	if p.baseDir != want {
+		t.Fatalf("new preparer baseDir = %q, want %q", p.baseDir, want)
+	}
 }
 
 func TestPrepareCreatesDirectoryWithoutGitHubRepo(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -24,6 +25,116 @@ func setupConfigSrc(t *testing.T) string {
 	return dir
 }
 
+func setRequiredConfigEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("TRELLO_API_SECRET", "env-secret")
+	t.Setenv("TRELLO_API_KEY", "env-key")
+	t.Setenv("TRELLO_API_TOKEN", "env-token")
+	t.Setenv("JJC_CONFIG_SRC", setupConfigSrc(t))
+	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
+}
+
+func TestLoadConfigWorkDirBaseFromEnv(t *testing.T) {
+	setRequiredConfigEnv(t)
+	base := filepath.Join(t.TempDir(), "jjc-work")
+	t.Setenv("JJC_WORK_DIR_BASE", base)
+
+	cfg, err := LoadConfig([]string{"cmd"})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.WorkDirBase != base {
+		t.Fatalf("expected work dir base from env %q, got %q", base, cfg.WorkDirBase)
+	}
+}
+
+func TestLoadConfigWorkDirBaseDefault(t *testing.T) {
+	setRequiredConfigEnv(t)
+
+	cfg, err := LoadConfig([]string{"cmd"})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	want := defaultWorkDirBase(runtime.GOOS)
+	if cfg.WorkDirBase != want {
+		t.Fatalf("expected default work dir base %q, got %q", want, cfg.WorkDirBase)
+	}
+}
+
+func TestLoadConfigWorkDirBaseRequiresAbsolutePath(t *testing.T) {
+	setRequiredConfigEnv(t)
+	t.Setenv("JJC_WORK_DIR_BASE", "relative-work")
+
+	_, err := LoadConfig([]string{"cmd"})
+	if err == nil {
+		t.Fatal("expected relative work dir base to fail validation")
+	}
+	if !strings.Contains(err.Error(), "work dir base") {
+		t.Fatalf("error should mention work dir base: %v", err)
+	}
+}
+
+func TestLoadConfigWorkDirBaseRejectsEmptyFlag(t *testing.T) {
+	setRequiredConfigEnv(t)
+
+	_, err := LoadConfig([]string{"cmd", "--work-dir-base", ""})
+	if err == nil {
+		t.Fatal("expected empty work dir base flag to fail validation")
+	}
+	if !strings.Contains(err.Error(), "missing work dir base") {
+		t.Fatalf("error should mention missing work dir base: %v", err)
+	}
+}
+
+func TestEnsureWorkDirBaseCreatesMissingDirectory(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "nested", "work")
+
+	if err := EnsureWorkDirBase(base); err != nil {
+		t.Fatalf("ensure work dir base: %v", err)
+	}
+	if !dirExists(base) {
+		t.Fatalf("work dir base %q was not created", base)
+	}
+}
+
+func TestEnsureWorkDirBaseRejectsInvalidPath(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dir  string
+		want string
+	}{
+		{name: "empty", dir: "", want: "empty"},
+		{name: "relative", dir: "relative-work", want: "absolute path"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := EnsureWorkDirBase(tc.dir)
+			if err == nil {
+				t.Fatal("expected invalid work dir base to fail")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error should mention %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestEnsureWorkDirBaseRejectsExistingFile(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "work-file")
+	if err := os.WriteFile(base, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	err := EnsureWorkDirBase(base)
+	if err == nil {
+		t.Fatal("expected existing file to fail work dir base validation")
+	}
+	if !strings.Contains(err.Error(), "ensure work dir base") {
+		t.Fatalf("error should mention work dir base: %v", err)
+	}
+}
+
 func TestLoadConfigFromEnv(t *testing.T) {
 	t.Setenv("LISTEN_ADDR", ":9090")
 	t.Setenv("TRELLO_API_SECRET", "env-secret")
@@ -34,6 +145,8 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	t.Setenv("COPILOT_MODEL", "env-model")
 	t.Setenv("JJC_CONFIG_SRC", setupConfigSrc(t))
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
+	workDirBase := filepath.Join(t.TempDir(), "work-from-env")
+	t.Setenv("JJC_WORK_DIR_BASE", workDirBase)
 	t.Setenv("LOG_FILE", "env.log")
 
 	cfg, err := LoadConfig([]string{"cmd"})
@@ -65,6 +178,9 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	if cfg.KanbanBoardID != "env-board" {
 		t.Fatalf("unexpected kanban board id: %s", cfg.KanbanBoardID)
 	}
+	if cfg.WorkDirBase != workDirBase {
+		t.Fatalf("unexpected work dir base: %s", cfg.WorkDirBase)
+	}
 	if cfg.LogFile != "env.log" {
 		t.Fatalf("unexpected log file: %s", cfg.LogFile)
 	}
@@ -80,8 +196,10 @@ func TestLoadConfigFlagOverridesEnv(t *testing.T) {
 	t.Setenv("COPILOT_MODEL", "env-model")
 	t.Setenv("JJC_CONFIG_SRC", setupConfigSrc(t))
 	t.Setenv("TRELLO_KANBAN_BOARD_ID", "env-board")
+	t.Setenv("JJC_WORK_DIR_BASE", filepath.Join(t.TempDir(), "work-from-env"))
+	flagWorkDirBase := filepath.Join(t.TempDir(), "work-from-flag")
 
-	cfg, err := LoadConfig([]string{"cmd", "--listen", ":8088", "--trello-api-secret", "flag-secret", "--copilot-model", "flag-model", "--config-src", "flag-config", "--kanban-board-id", "flag-board", "--log-file", "flag.log"})
+	cfg, err := LoadConfig([]string{"cmd", "--listen", ":8088", "--trello-api-secret", "flag-secret", "--copilot-model", "flag-model", "--config-src", "flag-config", "--work-dir-base", flagWorkDirBase, "--kanban-board-id", "flag-board", "--log-file", "flag.log"})
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
@@ -100,6 +218,9 @@ func TestLoadConfigFlagOverridesEnv(t *testing.T) {
 	}
 	if cfg.KanbanBoardID != "flag-board" {
 		t.Fatalf("expected kanban board id from flag, got %s", cfg.KanbanBoardID)
+	}
+	if cfg.WorkDirBase != flagWorkDirBase {
+		t.Fatalf("expected work dir base from flag, got %s", cfg.WorkDirBase)
 	}
 	if cfg.LogFile != "flag.log" {
 		t.Fatalf("expected log file from flag, got %s", cfg.LogFile)
@@ -251,6 +372,7 @@ func TestRedactedDoesNotLeakPrefix(t *testing.T) {
 		Tunnel:         "none",
 		CopilotModel:   "m",
 		ConfigSrc:      "c",
+		WorkDirBase:    "work",
 		KanbanBoardID:  "b",
 		LogFile:        "trellooperator.log",
 	}
@@ -287,6 +409,7 @@ func TestRedactedCoversEverySensitiveField(t *testing.T) {
 		Tunnel:         "none",
 		CopilotModel:   "model",
 		ConfigSrc:      "config-src",
+		WorkDirBase:    "work-dir-base",
 		KanbanBoardID:  "board",
 		LogFile:        "trellooperator.log",
 	}
@@ -339,6 +462,7 @@ func TestRedactedMentionsEveryNonSensitiveField(t *testing.T) {
 		Tunnel:         "REDACTED_TEST_TUNNEL",
 		CopilotModel:   "REDACTED_TEST_MODEL",
 		ConfigSrc:      "REDACTED_TEST_CONFIG_SRC",
+		WorkDirBase:    "REDACTED_TEST_WORK_DIR_BASE",
 		KanbanBoardID:  "REDACTED_TEST_BOARD",
 		LogFile:        "REDACTED_TEST_LOG_FILE",
 	}
