@@ -393,7 +393,7 @@ func (r *CopilotRunner) ensureAuditDir() (string, error) {
 	if r.auditDir != "" {
 		return r.auditDir, nil
 	}
-	dir, err := os.MkdirTemp(r.tmpDir, "openclaw-audit-*")
+	dir, err := os.MkdirTemp(r.tmpDir, "jjc-audit-*")
 	if err != nil {
 		return "", fmt.Errorf("create audit dir: %w", err)
 	}

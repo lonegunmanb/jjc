@@ -102,7 +102,7 @@ func New(opts Options) (*Renderer, error) {
 		return nil, fmt.Errorf("prompttmpl: playbooks dir %q is not a directory", opts.PlaybooksDir)
 	}
 
-	tempDir, err := os.MkdirTemp("", "openclaw-playbooks-*")
+	tempDir, err := os.MkdirTemp("", "jjc-playbooks-*")
 	if err != nil {
 		return nil, fmt.Errorf("prompttmpl: create temp dir: %w", err)
 	}
