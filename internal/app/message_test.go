@@ -29,7 +29,7 @@ func TestBuildMessageMoveCard(t *testing.T) {
 	})
 
 	got := BuildMessage(raw)
-	want := `Trello: 卡片 "Fix bug" 从 "Ready for review" 移到 "Approved for action" (by Roger)`
+	want := `Trello: card "Fix bug" moved from "Ready for review" to "Approved for action" (by Roger)`
 	if got != want {
 		t.Fatalf("unexpected message:\nwant: %s\ngot:  %s", want, got)
 	}
@@ -48,9 +48,101 @@ func TestBuildMessageCommentCard(t *testing.T) {
 	})
 
 	got := BuildMessage(raw)
-	want := `Trello: Alice 在卡片 "Implement feature" 上评论: Looks good`
+	want := `Trello: Alice commented on card "Implement feature": Looks good`
 	if got != want {
 		t.Fatalf("unexpected message:\nwant: %s\ngot:  %s", want, got)
+	}
+}
+
+func TestBuildLogSummaryUsesEnglishNarrative(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  []byte
+		want string
+	}{
+		{
+			name: "move card",
+			raw: mustJSON(t, map[string]any{
+				"action": map[string]any{
+					"type": "updateCard",
+					"data": map[string]any{
+						"card":       map[string]any{"name": "Fix bug"},
+						"listBefore": map[string]any{"name": "Ready for review"},
+						"listAfter":  map[string]any{"name": "Approved for action"},
+					},
+					"memberCreator": map[string]any{"fullName": "Roger"},
+				},
+			}),
+			want: `Trello: card "Fix bug" moved from "Ready for review" to "Approved for action" (by Roger)`,
+		},
+		{
+			name: "comment card",
+			raw: mustJSON(t, map[string]any{
+				"action": map[string]any{
+					"type": "commentCard",
+					"data": map[string]any{
+						"text": "Looks good",
+						"card": map[string]any{"name": "Implement feature"},
+					},
+					"memberCreator": map[string]any{"fullName": "Alice"},
+				},
+			}),
+			want: `Trello: Alice commented on card "Implement feature": Looks good`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := BuildLogSummary(tt.raw)
+			if got != tt.want {
+				t.Fatalf("unexpected log summary:\nwant: %s\ngot:  %s", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestBuildPromptSummaryUsesEnglishNarrative(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  []byte
+		want string
+	}{
+		{
+			name: "move card",
+			raw: mustJSON(t, map[string]any{
+				"action": map[string]any{
+					"type": "updateCard",
+					"data": map[string]any{
+						"card":       map[string]any{"name": "Fix bug"},
+						"listBefore": map[string]any{"name": "Ready for review"},
+						"listAfter":  map[string]any{"name": "Approved for action"},
+					},
+					"memberCreator": map[string]any{"fullName": "Roger"},
+				},
+			}),
+			want: `Trello: card "Fix bug" moved from "Ready for review" to "Approved for action" (by Roger)`,
+		},
+		{
+			name: "comment card",
+			raw: mustJSON(t, map[string]any{
+				"action": map[string]any{
+					"type": "commentCard",
+					"data": map[string]any{
+						"text": "Looks good",
+						"card": map[string]any{"name": "Implement feature"},
+					},
+					"memberCreator": map[string]any{"fullName": "Alice"},
+				},
+			}),
+			want: `Trello: Alice commented on card "Implement feature": Looks good`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := BuildPromptSummary(tt.raw)
+			if got != tt.want {
+				t.Fatalf("unexpected prompt summary:\nwant: %s\ngot:  %s", tt.want, got)
+			}
+		})
 	}
 }
 

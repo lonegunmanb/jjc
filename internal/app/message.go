@@ -41,12 +41,12 @@ func BuildLogSummary(raw []byte) string {
 	listAfterName := asString(listAfter["name"])
 
 	if listBeforeName != "" && listAfterName != "" {
-		return fmt.Sprintf("Trello: 卡片 %q 从 %q 移到 %q (by %s)", cardName, listBeforeName, listAfterName, fullName)
+		return fmt.Sprintf("Trello: card %q moved from %q to %q (by %s)", cardName, listBeforeName, listAfterName, fullName)
 	}
 
 	if actionType == "commentCard" {
 		text := fallback(asString(data["text"]), "")
-		return fmt.Sprintf("Trello: %s 在卡片 %q 上评论: %s", fullName, cardName, text)
+		return fmt.Sprintf("Trello: %s commented on card %q: %s", fullName, cardName, text)
 	}
 
 	return fmt.Sprintf("Trello: %s on card %q in board %q by %s raw=%s", fallback(actionType, "unknown-action"), cardName, boardName, fullName, compactJSON(raw))
@@ -85,12 +85,12 @@ func BuildPromptSummary(raw []byte) string {
 	listAfterName := asString(listAfter["name"])
 
 	if listBeforeName != "" && listAfterName != "" {
-		return fmt.Sprintf("Trello: 卡片 %q 从 %q 移到 %q (by %s)", cardName, listBeforeName, listAfterName, fullName)
+		return fmt.Sprintf("Trello: card %q moved from %q to %q (by %s)", cardName, listBeforeName, listAfterName, fullName)
 	}
 
 	if actionType == "commentCard" {
 		text := fallback(asString(data["text"]), "")
-		return fmt.Sprintf("Trello: %s 在卡片 %q 上评论: %s", fullName, cardName, text)
+		return fmt.Sprintf("Trello: %s commented on card %q: %s", fullName, cardName, text)
 	}
 
 	// Unrecognised action: report only the action type plus the named
