@@ -457,7 +457,7 @@ func (d *Dispatcher) runWorker(handle *workerHandle) {
 
 		if session == nil {
 			sysevent.Emitf(d.logger, "worker_session_creating", "card_id=%s event_id=%s", handle.cardID, msg.eventID)
-			created, err := d.factory.NewWorkerSession(context.Background(), handle.cardID, handle.tracker)
+			created, err := d.factory.NewWorkerSession(handle.ctx, handle.cardID, handle.tracker)
 			if err != nil {
 				sysevent.Emitf(d.logger, "worker_session_create_error", "card_id=%s event_id=%s err=%v",
 					handle.cardID, msg.eventID, err)
