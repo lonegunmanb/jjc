@@ -1,6 +1,6 @@
 // Package trelloclient is the project-local wrapper around the
 // upstream go-trello-sdk. It exposes only the operations the
-// trello-copilot gateway needs (card metadata, comments, list
+// JJC gateway needs (card metadata, comments, list
 // management, list lookups) behind a small interface so the rest of the
 // codebase does not depend on the generated SDK directly and so tests
 // can substitute a fake implementation without standing up an HTTP

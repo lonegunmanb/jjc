@@ -88,7 +88,7 @@ Leave these alone — they have nothing to do with the playbooks temp dir:
 > **Deprecation note: `<config-src>/scripts/refresh-copilot-setup.ps1` is no
 > longer required.** The AzureRM provider work_dir hook used to spawn an
 > ephemeral Copilot session whose only job was to invoke that script via
-> `pwsh -NoProfile -File ...`. As of [#13](https://github.com/lonegunmanb/trello-copilot/issues/13)
+> `pwsh -NoProfile -File ...`. As of [#13](https://github.com/lonegunmanb/jjc/issues/13)
 > the gateway ships an in-process `internal/app/aiassistedrefresh`
 > package that clones
 > `WodansSon/terraform-azurerm-ai-assisted-development` and runs the
@@ -170,11 +170,11 @@ It introduces three blocks:
 
 ### Tracking issues
 
-- `lonegunmanb/trello-copilot#5` — `kanban {}` shape + go-trello-sdk
+- `lonegunmanb/jjc#5` — `kanban {}` shape + go-trello-sdk
   bootstrap.
-- `lonegunmanb/trello-copilot#6` — `route {}` engine.
-- `lonegunmanb/trello-copilot#7` — `rule {}` engine + `github_issue`
+- `lonegunmanb/jjc#6` — `route {}` engine.
+- `lonegunmanb/jjc#7` — `rule {}` engine + `github_issue`
   HCL function.
-- `lonegunmanb/trello-copilot#1` — migrate `AzureRMRefreshHook`'s
+- `lonegunmanb/jjc#1` — migrate `AzureRMRefreshHook`'s
   ad-hoc system prompt onto the same playbooks renderer (uses #7's
   structured input).

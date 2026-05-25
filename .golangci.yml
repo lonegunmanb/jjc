@@ -27,7 +27,7 @@ linters:
         - fmt.Fprintln
         - (*os.File).Close
         - (io.Closer).Close
-        - (*github.com/lonegunmanb/trello-copilot/internal/app/prompttmpl.Renderer).Cleanup
+        - (*github.com/lonegunmanb/jjc/internal/app/prompttmpl.Renderer).Cleanup
   exclusions:
     paths:
       - tmp

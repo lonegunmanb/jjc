@@ -21,7 +21,7 @@ const trelloToolTimeout = 30 * time.Second
 // BuildTrelloTools returns the slice of copilot.Tool definitions that
 // the gateway registers on every per-card worker session. Each tool is
 // a thin wrapper around one trelloclient method, named per the
-// trello-copilot tool vocabulary (`trello_*` snake_case verbs).
+// JJC tool vocabulary (`trello_*` snake_case verbs).
 //
 // Read-only tools (GET) set SkipPermission = true so the worker doesn't
 // stall on a permission prompt for harmless lookups; write tools

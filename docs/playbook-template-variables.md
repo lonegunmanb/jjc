@@ -19,7 +19,7 @@
 > [examples/router/router.hcl](../examples/router/router.hcl)). Hard-coding
 > them in a playbook means a single rename in `router.hcl` silently
 > desynchronises the prompt from the routing layer; that defect is the
-> root cause of issue [#30](https://github.com/lonegunmanb/trello-copilot/issues/30).
+> root cause of issue [#30](https://github.com/lonegunmanb/jjc/issues/30).
 > Templating those values eliminates the class entirely: after startup,
 > what the worker reads in the prompt is what the gateway actually uses
 > to route — by construction.
