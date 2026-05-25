@@ -264,6 +264,20 @@ func TestAssembleWorkerSystemPromptFallback(t *testing.T) {
 	if !strings.Contains(got, "Fall back to the WORKER.md §0 self-bootstrap") {
 		t.Fatalf("expected fallback notice, got:\n%s", got)
 	}
+	fallbackStart := strings.Index(got, "The gateway could not pre-classify")
+	if fallbackStart == -1 {
+		t.Fatalf("expected fallback notice body, got:\n%s", got)
+	}
+	fallback := got[fallbackStart:]
+	if fallbackEnd := strings.Index(fallback, "\n"); fallbackEnd >= 0 {
+		fallback = fallback[:fallbackEnd]
+	}
+	if !strings.Contains(fallback, "trello_card_get") {
+		t.Fatalf("expected fallback notice to mention trello_card_get, got:\n%s", fallback)
+	}
+	if strings.Contains(fallback, ".ps1") {
+		t.Fatalf("fallback notice must not mention legacy .ps1 scripts, got:\n%s", fallback)
+	}
 }
 
 func TestBuildCardContextUsesBootstrapWorkDir(t *testing.T) {

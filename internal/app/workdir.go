@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"time"
 )
@@ -118,8 +117,8 @@ type WorkDirPreparer struct {
 }
 
 // NewWorkDirPreparer returns a preparer wired to the real git binary, the
-// per-OS default base directory, and a 60-second clone timeout. Pass nil
-// logger to use log.Default.
+// default base directory, and a 60-second clone timeout. Pass nil logger to
+// use log.Default.
 func NewWorkDirPreparer(logger sysevent.Sink) *WorkDirPreparer {
 	if logger == nil {
 		logger = sysevent.Default()
@@ -127,16 +126,23 @@ func NewWorkDirPreparer(logger sysevent.Sink) *WorkDirPreparer {
 	return &WorkDirPreparer{
 		logger:       logger,
 		gitRunner:    defaultGitRunner,
-		baseDir:      defaultWorkDirBase(runtime.GOOS),
+		baseDir:      defaultWorkDirBase(),
 		cloneTimeout: 60 * time.Second,
 	}
 }
 
-func defaultWorkDirBase(goos string) string {
-	if goos == "windows" {
-		return `C:\project`
+var getwdFunc = os.Getwd
+
+// defaultWorkDirBase returns the gateway-startup working directory joined
+// with "workspace". Operators can override this default via JJC_WORK_DIR_BASE
+// or WorkDirPreparer.SetBaseDir. If reading the working directory fails, it
+// intentionally and silently falls back to os.TempDir()/jjc-workspace.
+func defaultWorkDirBase() string {
+	cwd, err := getwdFunc()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "jjc-workspace")
 	}
-	return "/var/lib/jjc/work"
+	return filepath.Join(cwd, "workspace")
 }
 
 // SetBaseDir overrides the parent directory under which each card's
@@ -209,7 +215,7 @@ func (p *WorkDirPreparer) Prepare(ctx context.Context, cardID string, c CardClas
 
 	baseDir := p.baseDir
 	if baseDir == "" {
-		baseDir = defaultWorkDirBase(runtime.GOOS)
+		baseDir = defaultWorkDirBase()
 	}
 	workDir := filepath.Join(baseDir, cardID)
 	info := WorkDirInfo{
