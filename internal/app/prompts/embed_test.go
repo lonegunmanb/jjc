@@ -49,6 +49,20 @@ func TestEmbeddedWorkerMatchesPackageVar(t *testing.T) {
 	}
 }
 
+func TestEmbeddedWorkerDoesNotLockToPowerShell(t *testing.T) {
+	for _, forbidden := range []string{
+		`C:\project\<card_id>`,
+		`powershell -NoProfile -File <脚本绝对路径>`,
+		`New-Item -ItemType Directory ... <work_dir>`,
+		`Invoke-RestMethod`,
+		"不要在 exec 的 `command` 字段里内联 PowerShell 代码",
+	} {
+		if strings.Contains(EmbeddedWorker(), forbidden) {
+			t.Errorf("embedded WORKER.md unexpectedly contains %q", forbidden)
+		}
+	}
+}
+
 // sampleResolved builds a kanban.Resolved with every spec key populated
 // to a non-empty marker. Used by the guard tests below to drive the
 // renderer over the embedded prompts end-to-end.

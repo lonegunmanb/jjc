@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"github.com/lonegunmanb/jjc/internal/app/tunnel"
@@ -78,7 +77,7 @@ func loadConfigWithOutput(args []string, helpOutput io.Writer) (Config, error) {
 		Tunnel:        envOrDefault("TRELLO_GATEWAY_TUNNEL", tunnel.Cloudflared),
 		CopilotModel:  envOrDefault("COPILOT_MODEL", DefaultCopilotModel),
 		ConfigSrc:     os.Getenv("JJC_CONFIG_SRC"),
-		WorkDirBase:   envOrDefault("JJC_WORK_DIR_BASE", defaultWorkDirBase(runtime.GOOS)),
+		WorkDirBase:   envOrDefault("JJC_WORK_DIR_BASE", defaultWorkDirBase()),
 		KanbanBoardID: os.Getenv("TRELLO_KANBAN_BOARD_ID"),
 		LogFile:       envOrDefault("LOG_FILE", sysevent.DefaultLogFileName),
 	}

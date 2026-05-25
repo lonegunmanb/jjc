@@ -792,13 +792,14 @@ func buildCardContext(bs workerBootstrap, view *kanban.Resolved) string {
 	} else {
 		// Fallback path: gateway could not classify the card or no
 		// playbook is registered for this rule. The worker must
-		// follow the legacy WORKER.md §0 self-bootstrap procedure.
+		// follow the legacy WORKER.md §0 self-bootstrap procedure
+		// using the in-process trello_card_get tool.
 		b.WriteString("The gateway could not pre-classify this card, or no rule playbook is ")
 		b.WriteString("registered for its matched rule. Fall back to the WORKER.md §0 self-bootstrap ")
-		b.WriteString("procedure: run `trello-get-card-info.ps1 -CardId ")
+		b.WriteString("procedure: call the in-process `trello_card_get` tool with cardID=")
 		b.WriteString(bs.cardID)
-		b.WriteString("`, inspect the firstLine, and `view` the matching entry ")
-		b.WriteString("file under the workspace-trello-router directory.\n")
+		b.WriteString(", inspect the firstLine, and `view` the matching entry file under the ")
+		b.WriteString("configured router directory.\n")
 	}
 	return b.String()
 }

@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -63,21 +62,44 @@ func newPreparerForTest(t *testing.T) (*WorkDirPreparer, *stubGitRunner) {
 	return p, stub
 }
 
-func TestDefaultWorkDirBasePerOS(t *testing.T) {
-	if got := defaultWorkDirBase("windows"); got != `C:\project` {
-		t.Fatalf("windows default work dir base = %q", got)
+func TestDefaultWorkDirBaseUsesCWDWorkspace(t *testing.T) {
+	base := t.TempDir()
+	t.Chdir(base)
+	want := filepath.Join(base, "workspace")
+	if err := os.MkdirAll(want, 0o755); err != nil {
+		t.Fatalf("mkdir expected workspace: %v", err)
 	}
-	if got := defaultWorkDirBase("linux"); got != "/var/lib/jjc/work" {
-		t.Fatalf("linux default work dir base = %q", got)
+
+	got := defaultWorkDirBase()
+	resolvedGot, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		t.Fatalf("eval got path %q: %v", got, err)
 	}
-	if got := defaultWorkDirBase("darwin"); got != "/var/lib/jjc/work" {
-		t.Fatalf("darwin default work dir base = %q", got)
+	resolvedWant, err := filepath.EvalSymlinks(want)
+	if err != nil {
+		t.Fatalf("eval want path %q: %v", want, err)
+	}
+	if resolvedGot != resolvedWant {
+		t.Fatalf("default work dir base = %q, want %q", resolvedGot, resolvedWant)
+	}
+}
+
+func TestDefaultWorkDirBaseFallsBackOnGetwdError(t *testing.T) {
+	oldGetwd := getwdFunc
+	getwdFunc = func() (string, error) {
+		return "", errors.New("boom")
+	}
+	defer func() { getwdFunc = oldGetwd }()
+
+	want := filepath.Join(os.TempDir(), "jjc-workspace")
+	if got := defaultWorkDirBase(); got != want {
+		t.Fatalf("default work dir base fallback = %q, want %q", got, want)
 	}
 }
 
 func TestNewWorkDirPreparerUsesDefaultWorkDirBase(t *testing.T) {
 	p := NewWorkDirPreparer(silentLogger())
-	want := defaultWorkDirBase(runtime.GOOS)
+	want := defaultWorkDirBase()
 	if p.baseDir != want {
 		t.Fatalf("new preparer baseDir = %q, want %q", p.baseDir, want)
 	}

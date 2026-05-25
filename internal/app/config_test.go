@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -57,7 +56,7 @@ func TestLoadConfigWorkDirBaseDefault(t *testing.T) {
 		t.Fatalf("load config: %v", err)
 	}
 
-	want := defaultWorkDirBase(runtime.GOOS)
+	want := defaultWorkDirBase()
 	if cfg.WorkDirBase != want {
 		t.Fatalf("expected default work dir base %q, got %q", want, cfg.WorkDirBase)
 	}
