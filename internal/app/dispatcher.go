@@ -69,13 +69,13 @@ type workerHandle struct {
 	// done is closed after the worker goroutine exits and the session has
 	// been disconnected. Used by Stop to wait for orderly shutdown.
 	done chan struct{}
-	// ctx is cancelled by DeleteWorker so an in-flight SendAndWait (which
-	// can otherwise block for the model's full think+tool cycle) returns
-	// promptly with ctx.Err().
+	// ctx is cancelled by Stop or DeleteWorker so an in-flight SendAndWait
+	// (which can otherwise block for the model's full think+tool cycle)
+	// returns promptly with ctx.Err().
 	ctx    context.Context
 	cancel context.CancelFunc
-	// kill is closed by DeleteWorker to ask the worker goroutine to exit
-	// immediately without draining any remaining inbox messages.
+	// kill is closed by Stop or DeleteWorker to ask the worker goroutine
+	// to exit immediately without draining any remaining inbox messages.
 	kill chan struct{}
 }
 
@@ -510,13 +510,14 @@ func (d *Dispatcher) deregister(cardID string) {
 //
 // Lifecycle invariant: only the per-card runWorker goroutine is allowed
 // to touch its own inbox channel beyond enqueueing. Stop closes each
-// worker's `kill` channel, which makes:
+// worker's `kill` channel and cancels its context, which makes:
 //
 //   - any in-flight enqueue racing with Stop fall into the `<-kill` branch
 //     of its `select` and return ErrWorkerDeleted instead of panicking on
-//     a send to a closed channel; and
+//     a send to a closed channel;
 //   - the worker goroutine wake from its inbox/idle-timer select, return,
-//     and disconnect the session.
+//     and disconnect the session; and
+//   - any in-flight SendAndWait call return promptly via ctx.Err().
 //
 // We deliberately do NOT close the inbox channel from here — doing so
 // would race with concurrent enqueues and panic.
@@ -535,6 +536,7 @@ func (d *Dispatcher) Stop() {
 
 	for _, h := range handles {
 		close(h.kill)
+		h.cancel()
 	}
 	for _, h := range handles {
 		<-h.done

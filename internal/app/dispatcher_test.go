@@ -88,6 +88,29 @@ func (f *fakeFactory) get(cardID string) *fakeSession {
 	return f.sessions[cardID]
 }
 
+type cancelBlockingSession struct {
+	started chan struct{}
+	ctxDone chan struct{}
+}
+
+func newCancelBlockingSession() *cancelBlockingSession {
+	return &cancelBlockingSession{
+		started: make(chan struct{}),
+		ctxDone: make(chan struct{}),
+	}
+}
+
+func (s *cancelBlockingSession) SendAndWait(ctx context.Context, prompt string) error {
+	close(s.started)
+	<-ctx.Done()
+	close(s.ctxDone)
+	return ctx.Err()
+}
+
+func (s *cancelBlockingSession) Disconnect() error {
+	return nil
+}
+
 func dispatchEvent(t *testing.T, d *Dispatcher, eventID, body string) {
 	t.Helper()
 	if err := d.Dispatch(context.Background(), eventID, []byte(body)); err != nil {
@@ -337,6 +360,42 @@ func TestDispatcherStopAfterStopReturnsError(t *testing.T) {
 	err := d.Dispatch(context.Background(), "evt", []byte(body))
 	if !errors.Is(err, ErrDispatcherStopped) {
 		t.Fatalf("expected ErrDispatcherStopped, got %v", err)
+	}
+}
+
+func TestDispatcherStopCancelsInflightSend(t *testing.T) {
+	session := newCancelBlockingSession()
+	d := NewDispatcher(sysevent.Default(), SessionFactoryFunc(func(context.Context, string, *ActivityTracker) (WorkerSession, error) {
+		return session, nil
+	}))
+	defer d.Stop()
+
+	const cardID = "stop-card"
+	body := `{"action":{"type":"updateCard","data":{"card":{"id":"` + cardID + `"},"listAfter":{"name":"Analyze"}}}}`
+	dispatchEvent(t, d, "evt", body)
+
+	select {
+	case <-session.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for send to be in flight")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		d.Stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop timed out waiting for in-flight send to cancel")
+	}
+
+	select {
+	case <-session.ctxDone:
+	default:
+		t.Fatal("SendAndWait did not observe ctx.Done")
 	}
 }
 
