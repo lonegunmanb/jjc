@@ -165,6 +165,27 @@ func TestAssembleDepartureNoticeNilViewFallsBackToLegacyNames(t *testing.T) {
 	}
 }
 
+func TestAssembleTerminateNoticeDoesNotHardcodeWorkDirPath(t *testing.T) {
+	notice := assembleTerminateNotice(
+		[]byte(`{"action":{"type":"deleteCard"}}`),
+		[]byte(`{"action":{"type":"deleteCard"}}`),
+		"done",
+	)
+
+	for _, forbidden := range []string{`C:\project\`, "<card_id>"} {
+		if strings.Contains(notice, forbidden) {
+			t.Fatalf("assembleTerminateNotice() contains forbidden work_dir placeholder %q\n%s", forbidden, notice)
+		}
+	}
+
+	lower := strings.ToLower(notice)
+	for _, want := range []string{"work_dir", "card context"} {
+		if !strings.Contains(lower, want) {
+			t.Fatalf("assembleTerminateNotice() missing %q\n%s", want, notice)
+		}
+	}
+}
+
 func TestEvaluateRoutePopulatesListIDs(t *testing.T) {
 	cfg, err := router.DecodeConfig([]byte(`
 route "moved_by_id" {
