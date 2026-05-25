@@ -15,7 +15,7 @@ func TestSlimRawBodyKeepsOnlyAllowedFields(t *testing.T) {
 				"listAfter": {"name": "Analyze", "id": "y"},
 				"board": {"name": "Main Board"}
 			},
-			"memberCreator": {"fullName": "HeZijie", "username": "hzj"},
+			"memberCreator": {"fullName": "Test User", "username": "testuser"},
 			"id": "action-id"
 		},
 		"model": "should-not-forward"
