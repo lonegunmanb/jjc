@@ -77,6 +77,19 @@ type workerHandle struct {
 	// kill is closed by Stop or DeleteWorker to ask the worker goroutine
 	// to exit immediately without draining any remaining inbox messages.
 	kill chan struct{}
+	// killOnce guards close(kill) so concurrent Stop()/DeleteWorker()
+	// calls on the same handle cannot double-close. See issue #67.
+	killOnce sync.Once
+}
+
+// shutdown closes the kill channel exactly once and cancels the
+// handle's context. Safe to call concurrently from Stop() and
+// DeleteWorker(): see issue #67.
+func (h *workerHandle) shutdown() {
+	h.killOnce.Do(func() {
+		close(h.kill)
+		h.cancel()
+	})
 }
 
 // DefaultIdleTimeout is how long a worker session may sit idle before the
@@ -535,8 +548,7 @@ func (d *Dispatcher) Stop() {
 	d.mu.Unlock()
 
 	for _, h := range handles {
-		close(h.kill)
-		h.cancel()
+		h.shutdown()
 	}
 	for _, h := range handles {
 		<-h.done
@@ -579,8 +591,7 @@ func (d *Dispatcher) DeleteWorker(cardID string) (string, error) {
 
 	// Close kill first so the goroutine wakes from any blocking inbox
 	// read; cancel ctx so SendAndWait (if mid-flight) returns promptly.
-	close(h.kill)
-	h.cancel()
+	h.shutdown()
 	<-h.done
 
 	sysevent.Emitf(d.logger, "worker_deleted", "card_id=%s work_dir=%q", cardID, workDir)
