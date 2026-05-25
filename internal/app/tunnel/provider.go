@@ -115,8 +115,20 @@ func (p *CloudflaredProvider) Start(ctx context.Context, localAddr string) (stri
 
 	urlCh := make(chan string, 1)
 	logCh := make(chan string, 16)
-	go scanForURL(stderr, urlCh, logCh)
-	go scanForURL(stdout, urlCh, logCh)
+	var logReaders sync.WaitGroup
+	logReaders.Add(2)
+	go func() {
+		defer logReaders.Done()
+		scanForURL(stderr, urlCh, logCh)
+	}()
+	go func() {
+		defer logReaders.Done()
+		scanForURL(stdout, urlCh, logCh)
+	}()
+	go func() {
+		logReaders.Wait()
+		close(logCh)
+	}()
 	go func() {
 		for line := range logCh {
 			sysevent.Emitf(p.logger, "cloudflared_output", "line=%q", line)
