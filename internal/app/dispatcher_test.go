@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/lonegunmanb/jjc/internal/app/kanban"
 	"github.com/lonegunmanb/jjc/internal/app/router"
 	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
@@ -128,6 +130,39 @@ func waitFor(t *testing.T, deadline time.Duration, cond func() bool, msg string)
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timeout waiting for: %s", msg)
+}
+
+func TestAssembleDepartureNoticeUsesKanbanNames(t *testing.T) {
+	rawBody := []byte(`{"action":{"type":"updateCard","data":{"card":{"id":"card1"},"listAfter":{"name":"Done"}}}}`)
+	slimBody := []byte(`{"action":{"type":"updateCard"}}`)
+	view := &kanban.Resolved{
+		Plan:   kanban.Role{Name: "调研"},
+		Action: kanban.Role{Name: "执行"},
+	}
+
+	got := assembleDepartureNotice(rawBody, slimBody, "Done", view)
+	for _, want := range []string{"调研", "执行"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("departure notice missing kanban name %q: %s", want, got)
+		}
+	}
+	for _, legacy := range []string{"Analyze", "In action"} {
+		if strings.Contains(got, legacy) {
+			t.Errorf("departure notice contains legacy name %q: %s", legacy, got)
+		}
+	}
+}
+
+func TestAssembleDepartureNoticeNilViewFallsBackToLegacyNames(t *testing.T) {
+	rawBody := []byte(`{"action":{"type":"updateCard","data":{"card":{"id":"card1"},"listAfter":{"name":"Done"}}}}`)
+	slimBody := []byte(`{"action":{"type":"updateCard"}}`)
+
+	got := assembleDepartureNotice(rawBody, slimBody, "Done", nil)
+	for _, want := range []string{"Analyze", "In action"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("departure notice missing legacy name %q: %s", want, got)
+		}
+	}
 }
 
 func TestEvaluateRoutePopulatesListIDs(t *testing.T) {
