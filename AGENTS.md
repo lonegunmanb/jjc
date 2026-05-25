@@ -134,48 +134,110 @@ Karpathy 原文：「these guidelines bias toward caution over speed. For trivia
 ## 2. 提交 PR 之前必须经过独立子 agent 代码评审
 
 > 自评不算。必须由 [.github/agents/code-reviewer.agent.md](.github/agents/code-reviewer.agent.md) 这个**只读**子 agent 独立审阅。
+>
+> 评审是一个**多轮协商**过程，不是「一次性裁决」。实现 agent 与 reviewer 通过结构化对话推进——
+> 实现 agent 对每条 finding 用 `fix` / `defer` / `push-back` 三选一回应，reviewer 在下一轮把每条
+> finding 标记为 `RESOLVED` / `DEFERRED` / `WITHDRAWN` / `HELD`。这套机制专为防止两类失败模式：
+> (a) reviewer 无节制堆 finding 驱动范围蔓延、(b) 实现 agent 无条件接受所有 finding 导致永远收敛
+> 不到 `APPROVED`。
 
-### 2.1 强制流程
+### 2.1 强制流程（七步）
 
 1. 实现 agent 完成 TDD 循环，本地校验全绿。
-2. **必须**通过子 agent 调用机制（`runSubagent` 或等价的 hand-off）调用 `code-reviewer` 子 agent，传入：
+2. **必须**通过子 agent 调用机制（`runSubagent` 或等价的 hand-off）调用 `code-reviewer` 子 agent，
+   传入：
    - 对应 issue 编号（如 `#46`）与一句话目标描述
-   - 已修改 / 新增的文件清单
+   - 本轮编号 `Round: N`（首轮 `N=1`）
+   - 已修改 / 新增的文件清单 + diff 大小（files / additions / deletions）
    - 本地校验命令（vet / build / test -race / golangci-lint）的实际输出
-   - 实现 agent 自述的 TDD 证据（Red 测试名、Green 实现摘要）
-3. `code-reviewer` 子 agent 会输出一份结构化评审报告（见 §2.3），必须包含明确 verdict：
+   - 实现 agent 自述的 TDD 证据（Red 测试名 + 失败信息节选 + Green 实现摘要）；纯文档 PR
+     须显式说明走 §1.1 豁免
+   - **`N ≥ 2` 时**：上一轮 reviewer 的完整报告 + 实现 agent 对每条 finding 的逐条回应
+     + 本轮新引入的 diff
+3. `code-reviewer` 子 agent 输出一份结构化评审报告（见 §2.3），必须包含明确 verdict：
    - `APPROVED` — 可以提交 PR
-   - `CHANGES_REQUESTED` — 不允许提交 PR，必须先修
-4. 若 verdict 为 `CHANGES_REQUESTED`，实现 agent 修复后**重新触发**子 agent 评审（不允许跳过），
-   直到 `APPROVED`。
-5. PR 描述里必须粘贴最后一次 `APPROVED` 评审报告全文，作为合并门禁证据。
+   - `CHANGES_REQUESTED` — 需要再走一轮
+4. 若 verdict 为 `CHANGES_REQUESTED`，实现 agent 对每条 finding **必须显式三选一回应**——
+   不允许沉默，也**不允许无条件全部接受所有 finding 直接改代码**（无条件接受会驱动范围蔓延、
+   把任务越拖越大）：
+   - `fix` — 同意 finding，按建议修改代码；本轮代码改动只针对这条 finding（或同一轮里的其它
+     `fix` finding），不要顺手带入额外重构
+   - `defer` — 同意 finding 是真问题但**不在本 PR 范围内**；必须**当场创建 follow-up issue**
+     并把 issue 编号记入回应
+   - `push-back` — 不同意 finding；必须给出**技术理由**（指向代码 / 测试 / 文档证据）说服 reviewer
+5. 应用第 4 步的回应（写代码 / 开 issue / 起草反驳），然后跑一次本地校验确认仍然全绿。
+6. 携带「上一轮报告 + 本轮逐条回应 + 新 diff + 新校验输出」**重新触发** reviewer。不允许跳过。
+7. 循环直到 `APPROVED`，或触发 §2.4 的 10 轮上限释放条件。最后一轮的 `APPROVED` 报告
+   （连同完整 Dialog Log，见 §3）粘贴到 PR 描述里作为合并门禁证据。
 
 ### 2.2 评审隔离硬约束
 
 - 评审子 agent **只能读，不能写**。tools 已被限制为 `read, search`，禁止 `edit` 与 `execute`。
-- 评审子 agent 必须以**独立 session** 运行（context 隔离），不复用实现 agent 的对话历史，避免
-  confirmation bias。
-- 实现 agent 不允许「修改评审子 agent 的 prompt 或裁剪其评审清单」来换取 `APPROVED`。
+- 评审子 agent 每轮以**独立 session** 运行（不复用历史对话上下文以避免 confirmation bias），
+  但**必须显式接收**：
+  - 上一轮的完整报告（含每条 finding 的 severity / confidence / file:line / 建议）
+  - 实现 agent 对每条 finding 的回应（`fix` 附带 commit SHA + diff / `defer` 附带 follow-up
+    issue 编号 / `push-back` 附带技术理由）
+  - 本轮新引入的 diff
+- 实现 agent 不允许**未经授权**地修改评审子 agent 的 prompt 或裁剪其评审清单来换取
+  `APPROVED`；如果本任务的目标本来就是改评审规则（例如本份 commit），按正常流程走，但要在
+  PR 描述里显式记录这是规则变更 PR。
 
 ### 2.3 评审报告必须字段
 
 ```
 Issue: #<num>
+Round: <N>
 Verdict: APPROVED | CHANGES_REQUESTED
-Summary: <1-2 句>
-Findings:
-  - [BLOCKER|MAJOR|MINOR|NIT] <file:line> — <问题描述> — <建议修复>
+Summary: <1-3 句>
+
+Findings (this round, ≤10):
+  - [BLOCKER|MAJOR|MINOR|NIT|SCOPE] (confidence=high|medium|low) <file:line> — <问题> — <建议>
+
+Carried Forward (status of prior findings):
+  - Round <k> [<sev>] <file:line>: <RESOLVED|DEFERRED|WITHDRAWN|HELD> — <一句话理由>
+  - (Round 1 时写 "N/A — first round")
+
 TDD Evidence Check:
-  - 新增公开符号是否都有对应失败优先的测试: yes/no + 证据
+  - 新增公开符号是否都有对应失败优先的测试: yes/no + 证据 / N/A 文档豁免
   - 是否存在被跳过/注释的测试: yes/no
-  - race / lint / vet / build 是否真的跑过: yes/no
+  - race / lint / vet / build 是否真的跑过且全绿: yes/no
+
 Security & Safety:
   - 输入边界、错误处理、并发安全、敏感数据是否经过检查
+
 Out-of-scope Drift:
   - 是否引入了任务范围外的修改
+
+Re-review Required: yes/no
 ```
 
-`BLOCKER` 或 `MAJOR` 中任意一条存在即必须为 `CHANGES_REQUESTED`。
+- 单轮 finding（含 carried-forward 的 HELD）总数 **≤ 10**。
+- `BLOCKER` 或 `MAJOR` 中任意一条存在（含 HELD）即必须为 `CHANGES_REQUESTED`。
+- `confidence = low` 的 `BLOCKER` 自动降 `MAJOR`；`low` 的 `MAJOR` / `MINOR` 自动降 `NIT`；
+  `low` 的 `NIT` 不输出。
+- `Step 0` 的 `SCOPE` 命中时本报告唯一 finding 是该 `SCOPE`，不允许夹带其它细节 finding。
+
+### 2.4 10 轮上限 + 释放规则
+
+无限循环是评审制度的死敌。设定**单 PR 最多 10 轮**评审协商：
+
+- **任何 `BLOCKER`（含 HELD）在任何轮次都阻塞合并**；到了第 10 轮仍有 `BLOCKER`，PR 必须
+  close 或拆小重做。
+- 第 10 轮还剩 `MAJOR` / `MINOR` / `NIT`（含 HELD）时，**释放权在实现 agent**——实现 agent
+  必须为**每一条**残余 finding 选一项归宿：
+  - `defer`（附 follow-up issue 编号），或
+  - `push-back`（附技术理由）。
+
+  这两项一旦记入 PR 描述 `## Dialog Log`，等同于把该条 `MAJOR` / `MINOR` / `NIT` 释放——
+  reviewer 不再有否决权（已经协商 10 轮）。
+- 触发 §2.4 释放时 PR 标题必须加 `[10-round-cap-released]` 前缀，由人类合并者最终决断是否合并。
+- 计数规则：`Round 1` = 实现 agent 第一次把任务提交给 reviewer；reviewer 每一次输出报告记为
+  下一轮的入口（即 reviewer 的第 N 轮报告 + 实现 agent 第 N 轮回应共同构成 `Round N`）。
+
+> 这条规则**不是放水通道**——`BLOCKER` 永远阻塞；`MAJOR` / `MINOR` / `NIT` 释放需要实现
+> agent 在每条上独立给出 `defer` 或 `push-back`，且全部记录在 PR Dialog Log 中可被人类复核。
+> 规则的目的是终止「reviewer 每轮再加 1 条新 finding 让 PR 永远 CHANGES_REQUESTED」的死循环。
 
 ---
 
@@ -214,8 +276,28 @@ $ golangci-lint run --timeout=5m
 - 对应 PR 门禁 workflow：<workflow 文件名 + job 名 + 触发事件>
 - CI Gap（如有）：<缺失的 job + 原因 + 跟进 issue ID>；无 gap 写 `none`
 
+## Review Round
+- Final Round: <N>（达到 APPROVED 或触发 §2.4 释放时的轮次）
+- §2.4 Released: <yes / no>（若 yes，PR 标题须带 `[10-round-cap-released]` 前缀，并列出全部
+  `defer` / `push-back` 的 finding 与归宿）
+
+## Dialog Log
+Round 1:
+  Reviewer findings:
+    - [<sev>] (confidence=<c>) <file:line> — <一行摘要>
+    - ...
+  Implementer responses:
+    - <file:line> [<sev>]: fix — <做了什么修改 / 引入的 commit SHA>
+    - <file:line> [<sev>]: defer — follow-up issue #<num>
+    - <file:line> [<sev>]: push-back — <技术理由摘要>
+  Reviewer Round 2 verdict on each: <RESOLVED|DEFERRED|WITHDRAWN|HELD>
+Round 2:
+  ...
+（直到 APPROVED 或触发 §2.4 释放）
+
 ## Independent Code Review
-<粘贴 code-reviewer 子 agent 的最终 APPROVED 报告全文>
+<粘贴最后一轮 APPROVED 评审报告全文（含 Findings / Carried Forward / TDD Evidence Check /
+ Security & Safety / Out-of-scope Drift / Re-review Required）>
 
 ## Out of Scope
 <本 PR 显式不做的事>
@@ -300,7 +382,11 @@ $ golangci-lint run --timeout=5m
 - 不要在一个 PR 里夹带多个 issue 的改动；不要顺手重构任务范围外的文件。
 - 不要默默替用户做歧义选择——有多种合理解读时停下来在 issue / PR 评论里列选项。
 - 不要在任务范围外「顺手」重构、改格式、调注释；out-of-scope drift 会被独立评审打回。
-- 不要修改 [`.github/agents/code-reviewer.agent.md`](.github/agents/code-reviewer.agent.md) 来「让评审更宽松」。
+- 不要**无条件接受 reviewer 的每一条 finding**——必须对每条独立判断后给出 `fix` / `defer` /
+  `push-back` 之一（见 §2.1 第 4 步）。无条件接受会驱动范围蔓延、收敛不到 `APPROVED`。
+- 不要**未经授权**地修改 [`.github/agents/code-reviewer.agent.md`](.github/agents/code-reviewer.agent.md)
+  以放宽评审标准；如果本任务的目标本来就是改评审规则，按正常 PR 流程走（issue + 评审报告
+  + 人类合并者审）。
 - 不要把已有失败测试 `t.Skip()` 掉换通过；也不要把测试改成只断言「不 panic」。
 - 不要硬编码任何用户可见的路径（特别是 `C:\project` 这种 Windows-only 默认值）；走 `Config`。
 - 不要在 CI workflow 里用 `paths-ignore` 把本次 diff 影响的路径排除掉以闪过门禁；也不要把关键
@@ -312,4 +398,4 @@ $ golangci-lint run --timeout=5m
 
 ## 7. 一句话总结
 
-> **No tests, no code. No independent review, no PR. No CI gate, no commit.**
+> **No tests, no code. No independent review, no PR. No CI gate, no commit. Reviewer talks; implementer doesn't just nod.**
