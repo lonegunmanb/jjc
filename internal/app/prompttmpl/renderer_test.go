@@ -22,6 +22,14 @@ func writeFile(t *testing.T, dir, name, content string) {
 
 func discardLogger() sysevent.Sink { return sysevent.FromLogger(log.New(io.Discard, "", 0)) }
 
+func isolateProcessTempDir(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+	t.Setenv("TMP", dir)
+	t.Setenv("TEMP", dir)
+}
+
 func TestRender_SubstitutesBasenameToAbsPath(t *testing.T) {
 	src := t.TempDir()
 	writeFile(t, src, "azurerm.md", "see {{shared.md}} for details\n")
@@ -170,12 +178,29 @@ func TestRender_CleanupRemovesTempDir(t *testing.T) {
 	}
 }
 
+func TestRender_TempDirUsesJjcPlaybooksPrefix(t *testing.T) {
+	src := t.TempDir()
+	writeFile(t, src, "main.md", "hi\n")
+
+	r, err := New(Options{PlaybooksDir: src, Logger: discardLogger()})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer r.Cleanup()
+
+	base := filepath.Base(r.Dir())
+	if !strings.HasPrefix(base, "jjc-playbooks-") {
+		t.Fatalf("expected temp dir prefix jjc-playbooks-, got %q", base)
+	}
+}
+
 func TestRender_FailedRenderCleansTempDir(t *testing.T) {
+	isolateProcessTempDir(t)
 	src := t.TempDir()
 	writeFile(t, src, "main.md", "{{missing.md}}\n")
 
 	beforeEntries, _ := os.ReadDir(os.TempDir())
-	beforeCount := countOpenclawDirs(beforeEntries)
+	beforeCount := countJjcPlaybookDirs(beforeEntries)
 
 	_, err := New(Options{PlaybooksDir: src, Logger: discardLogger()})
 	if err == nil {
@@ -183,16 +208,16 @@ func TestRender_FailedRenderCleansTempDir(t *testing.T) {
 	}
 
 	afterEntries, _ := os.ReadDir(os.TempDir())
-	afterCount := countOpenclawDirs(afterEntries)
+	afterCount := countJjcPlaybookDirs(afterEntries)
 	if afterCount > beforeCount {
 		t.Fatalf("failed render should clean up its temp dir: before=%d after=%d", beforeCount, afterCount)
 	}
 }
 
-func countOpenclawDirs(entries []os.DirEntry) int {
+func countJjcPlaybookDirs(entries []os.DirEntry) int {
 	n := 0
 	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), "openclaw-playbooks-") {
+		if e.IsDir() && strings.HasPrefix(e.Name(), "jjc-playbooks-") {
 			n++
 		}
 	}
@@ -495,11 +520,12 @@ func TestRender_KanbanRefDoesNotShadowBasenameValidation(t *testing.T) {
 // missing-basename cleanup test: a failed render must remove the temp
 // dir so a failed boot leaves no stale state behind.
 func TestRender_FailedKanbanRenderCleansTempDir(t *testing.T) {
+	isolateProcessTempDir(t)
 	src := t.TempDir()
 	writeFile(t, src, "main.md", "{{kanban.plan.di}}\n") // unknown key
 
 	beforeEntries, _ := os.ReadDir(os.TempDir())
-	beforeCount := countOpenclawDirs(beforeEntries)
+	beforeCount := countJjcPlaybookDirs(beforeEntries)
 
 	_, err := New(Options{
 		PlaybooksDir: src,
@@ -511,7 +537,7 @@ func TestRender_FailedKanbanRenderCleansTempDir(t *testing.T) {
 	}
 
 	afterEntries, _ := os.ReadDir(os.TempDir())
-	afterCount := countOpenclawDirs(afterEntries)
+	afterCount := countJjcPlaybookDirs(afterEntries)
 	if afterCount > beforeCount {
 		t.Fatalf("failed render should clean up its temp dir: before=%d after=%d", beforeCount, afterCount)
 	}

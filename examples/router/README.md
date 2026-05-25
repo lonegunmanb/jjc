@@ -33,7 +33,7 @@ At startup the gateway:
    JJC downloads it into a per-process temp directory at startup and
    removes that directory on shutdown.
 2. Creates a per-process temp directory via
-   `os.MkdirTemp("", "openclaw-playbooks-*")` and writes the path to the
+   `os.MkdirTemp("", "jjc-playbooks-*")` and writes the path to the
    log as `event=playbooks_tempdir_created path=...`.
 3. Materialises five **embedded skeleton prompts** into the temp dir as
    defaults: `BOOTSTRAP.md`, `IDENTITY.md`, `WORKER.md`, `TOOLS.md`,
@@ -63,7 +63,7 @@ checklist…
 After rendering the worker sees something like:
 
 ```markdown
-…see [Plan §8](C:\Users\you\AppData\Local\Temp\openclaw-playbooks-1234567890\azurerm_provider_issue_bug_plan.md) for the full
+…see [Plan §8](C:\Users\you\AppData\Local\Temp\jjc-playbooks-1234567890\azurerm_provider_issue_bug_plan.md) for the full
 checklist…
 ```
 

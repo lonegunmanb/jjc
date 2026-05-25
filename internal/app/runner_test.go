@@ -109,6 +109,22 @@ func TestAuditDirCreatedAndCleanedByStop(t *testing.T) {
 	}
 }
 
+func TestAuditDirUsesJjcPrefix(t *testing.T) {
+	r := NewCopilotRunner("model", sysevent.Default())
+	r.tmpDir = t.TempDir()
+	t.Cleanup(func() { _ = r.Stop() })
+
+	path, err := r.writeAuditCopy("evt-prefix", "prompt")
+	if err != nil {
+		t.Fatalf("writeAuditCopy: %v", err)
+	}
+
+	base := filepath.Base(filepath.Dir(path))
+	if !strings.HasPrefix(base, "jjc-audit-") {
+		t.Fatalf("expected audit dir prefix jjc-audit-, got %q", base)
+	}
+}
+
 // TestMarkActionSeenRingDoesNotGrowUnbounded asserts that the
 // dedupOrder ring stays at ~dedupMaxLen capacity after many evictions.
 // Without the copy-and-truncate fix the slice's underlying array
