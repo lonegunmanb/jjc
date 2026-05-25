@@ -52,10 +52,10 @@ func TestEmbeddedWorkerMatchesPackageVar(t *testing.T) {
 func TestEmbeddedWorkerDoesNotLockToPowerShell(t *testing.T) {
 	for _, forbidden := range []string{
 		`C:\project\<card_id>`,
-		`powershell -NoProfile -File <脚本绝对路径>`,
+		`powershell -NoProfile -File <absolute-script-path>`,
 		`New-Item -ItemType Directory ... <work_dir>`,
 		`Invoke-RestMethod`,
-		"不要在 exec 的 `command` 字段里内联 PowerShell 代码",
+		"Don't inline PowerShell code in exec",
 	} {
 		if strings.Contains(EmbeddedWorker(), forbidden) {
 			t.Errorf("embedded WORKER.md unexpectedly contains %q", forbidden)
@@ -165,12 +165,13 @@ func TestEmbeddedPromptsHaveNoUnsubstitutedKanbanRefs(t *testing.T) {
 // We allow the literals to appear inside:
 //   - a `{{kanban...}}` template body itself (impossible, since those
 //     don't contain English words like "Analyze"),
-//   - a parenthetical "默认列名 ..." annotation (the spec explicitly
-//     permits this as a reading aid).
+//   - a parenthetical "Default list name ..." annotation (the spec
+//     explicitly permits this as a reading aid; the role-mapping table
+//     header in WORKER.md uses this exact phrase).
 //
 // To keep the matcher simple and false-positive-free, we walk each
-// line and skip lines that contain the marker "默认列名". Any other
-// occurrence of one of the seven defaults is a regression.
+// line and skip lines that contain the marker "Default list name". Any
+// other occurrence of one of the defaults is a regression.
 func TestEmbeddedWorkerHasNoHardCodedListNames(t *testing.T) {
 	defaults := []string{
 		"Analyze",
@@ -189,14 +190,13 @@ func TestEmbeddedWorkerHasNoHardCodedListNames(t *testing.T) {
 	for _, name := range defaults {
 		// Word-boundary match so substrings inside other words (e.g.
 		// "Pending PR" inside a longer GitHub label) are not false
-		// positives. The Chinese-character context the embedded
-		// prompts use means \b works correctly around the literals.
+		// positives.
 		pattern := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`)
 		for lineNum, line := range strings.Split(Worker, "\n") {
 			if !pattern.MatchString(line) {
 				continue
 			}
-			if strings.Contains(line, "默认列名") {
+			if strings.Contains(line, "Default list name") {
 				continue // §2.4.1-style reading-aid annotation
 			}
 			t.Errorf("embedded WORKER.md line %d still hard-codes default list name %q: %s",
@@ -207,8 +207,8 @@ func TestEmbeddedWorkerHasNoHardCodedListNames(t *testing.T) {
 
 // TestEmbeddedWorkerHasNoHardCodedAgentPrefix is the partner guard for
 // the §2.4.1 default-mention rule on the agent comment prefix. The only
-// permitted survival is the explicit "默认 `["[agent]:"]`" qualifier in
-// the CARD CONTEXT description; everything else must be templated.
+// permitted survival is the explicit `default `["[agent]:"]`` qualifier
+// in the CARD CONTEXT description; everything else must be templated.
 func TestEmbeddedWorkerHasNoHardCodedAgentPrefix(t *testing.T) {
 	// Match `[agent]:` including any optional trailing space inside the
 	// inline-code form `` `[agent]:` ``.
