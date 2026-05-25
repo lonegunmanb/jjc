@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"os"
@@ -125,29 +124,85 @@ func TestAuditDirUsesJjcPrefix(t *testing.T) {
 	}
 }
 
-// TestMarkActionSeenRingDoesNotGrowUnbounded asserts that the
-// dedupOrder ring stays at ~dedupMaxLen capacity after many evictions.
-// Without the copy-and-truncate fix the slice's underlying array
-// doubled forever; cap should now stabilise close to dedupMaxLen.
-func TestMarkActionSeenRingDoesNotGrowUnbounded(t *testing.T) {
+func TestMarkActionSeenReturnsTrueOnDuplicateWithinTTL(t *testing.T) {
 	r := NewCopilotRunner("model", sysevent.Default())
-	r.dedupMaxLen = 8
 
-	for i := 0; i < 1000; i++ {
-		r.markActionSeen(fmt.Sprintf("action-%d", i))
+	if dup := r.markActionSeen("a"); dup {
+		t.Fatal("first action should be treated as fresh")
 	}
+	if dup := r.markActionSeen("a"); !dup {
+		t.Fatal("duplicate action within TTL should be detected")
+	}
+}
 
-	if got := len(r.dedupOrder); got != r.dedupMaxLen {
-		t.Fatalf("dedupOrder len = %d, want %d", got, r.dedupMaxLen)
+func TestMarkActionSeenWithNilNowFnUsesWallClock(t *testing.T) {
+	r := NewCopilotRunner("model", sysevent.Default())
+	r.nowFn = nil
+
+	if dup := r.markActionSeen("abc"); dup {
+		t.Fatal("first action should be treated as fresh")
 	}
-	// cap is allowed to be slightly larger than dedupMaxLen because of
-	// the initial append, but it must not grow with iteration count.
-	if cap(r.dedupOrder) > r.dedupMaxLen*4 {
-		t.Fatalf("dedupOrder backing array growing unboundedly: cap=%d (max=%d)",
-			cap(r.dedupOrder), r.dedupMaxLen)
+	if dup := r.markActionSeen("abc"); !dup {
+		t.Fatal("duplicate action within wall-clock TTL should be detected")
 	}
-	if got := len(r.dedupSeen); got != r.dedupMaxLen {
-		t.Fatalf("dedupSeen size = %d, want %d", got, r.dedupMaxLen)
+}
+
+func TestMarkActionSeenReturnsFalseAfterTTLExpiry(t *testing.T) {
+	r := NewCopilotRunner("model", sysevent.Default())
+	r.dedupTTL = 100 * time.Millisecond
+	now := time.Unix(0, 0)
+	r.nowFn = func() time.Time { return now }
+
+	if dup := r.markActionSeen("a"); dup {
+		t.Fatal("first action should be treated as fresh")
+	}
+	now = now.Add(200 * time.Millisecond)
+	if dup := r.markActionSeen("a"); dup {
+		t.Fatal("action should be treated as fresh after TTL expiry")
+	}
+}
+
+func TestMarkActionSeenPrunesExpiredEntries(t *testing.T) {
+	r := NewCopilotRunner("model", sysevent.Default())
+	r.dedupTTL = 100 * time.Millisecond
+	now := time.Unix(0, 0)
+	r.nowFn = func() time.Time { return now }
+
+	r.markActionSeen("a")
+	now = now.Add(200 * time.Millisecond)
+	r.markActionSeen("b")
+
+	if got := len(r.dedupSeen); got != 1 {
+		t.Fatalf("dedupSeen size after pruning = %d, want 1", got)
+	}
+	if dup := r.markActionSeen("b"); !dup {
+		t.Fatal("remaining fresh action should still be detected as duplicate")
+	}
+}
+
+func TestMarkActionSeenMapDoesNotGrowUnboundedUnderTTL(t *testing.T) {
+	r := NewCopilotRunner("model", sysevent.Default())
+	r.dedupTTL = time.Minute
+	now := time.Unix(0, 0)
+	r.nowFn = func() time.Time { return now }
+
+	const maxEntries = 13
+	arrivalSpacing := 5 * time.Second
+	insertDuration := 10 * time.Minute
+	inserted := 0
+	for elapsed := time.Duration(0); elapsed < insertDuration; elapsed += arrivalSpacing {
+		actionID := "action-" + now.Format(time.RFC3339Nano)
+		if dup := r.markActionSeen(actionID); dup {
+			t.Fatalf("unique action %q should be treated as fresh", actionID)
+		}
+		now = now.Add(arrivalSpacing)
+		inserted++
+	}
+	if inserted != 120 {
+		t.Fatalf("inserted %d actions, want 120", inserted)
+	}
+	if got := len(r.dedupSeen); got > maxEntries {
+		t.Fatalf("dedupSeen size after TTL pruning = %d, want <= %d", got, maxEntries)
 	}
 }
 

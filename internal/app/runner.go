@@ -87,10 +87,10 @@ type CopilotRunner struct {
 	// dedupMu guards the recent action.id set used to drop redelivered
 	// Trello webhook events (Trello retries when the callback takes longer
 	// than ~30s to acknowledge).
-	dedupMu     sync.Mutex
-	dedupSeen   map[string]struct{}
-	dedupOrder  []string
-	dedupMaxLen int
+	dedupMu   sync.Mutex
+	dedupSeen map[string]time.Time
+	dedupTTL  time.Duration
+	nowFn     func() time.Time
 
 	// auditMu guards lazy creation of the per-process audit directory
 	// that holds the .md copies of every dispatched prompt; the
@@ -110,10 +110,11 @@ func NewCopilotRunner(model string, logger sysevent.Sink) *CopilotRunner {
 		logger = sysevent.Default()
 	}
 	r := &CopilotRunner{
-		model:       model,
-		logger:      logger,
-		dedupMaxLen: 256,
-		preparer:    NewWorkDirPreparer(logger),
+		model:    model,
+		logger:   logger,
+		dedupTTL: 5 * time.Minute,
+		nowFn:    time.Now,
+		preparer: NewWorkDirPreparer(logger),
 	}
 	r.dispatcher = NewDispatcher(logger, r)
 	return r
@@ -489,34 +490,35 @@ func (r *CopilotRunner) NewWorkerSession(ctx context.Context, cardID string, tra
 }
 
 // markActionSeen records the given Trello action.id and returns true if it
-// was already seen. The set is bounded to dedupMaxLen entries; the oldest
-// id is evicted FIFO when the set is full.
+// was already seen within the dedup TTL.
 func (r *CopilotRunner) markActionSeen(actionID string) bool {
 	if actionID == "" {
 		return false
 	}
 	r.dedupMu.Lock()
 	defer r.dedupMu.Unlock()
+
+	nowFn := r.nowFn
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	now := nowFn()
 	if r.dedupSeen == nil {
-		r.dedupSeen = make(map[string]struct{}, r.dedupMaxLen)
+		r.dedupSeen = make(map[string]time.Time)
+	}
+	// Prune is O(n) on every insert. n is bounded by dedupTTL ×
+	// peak_insert_rate; for Trello's ~30s retry SLA and the 5-minute default
+	// TTL this is well under a thousand entries even on a busy board, so the
+	// simple full-scan is preferred over a heap/queue for clarity.
+	for id, seenAt := range r.dedupSeen {
+		if seenAt.Add(r.dedupTTL).Before(now) {
+			delete(r.dedupSeen, id)
+		}
 	}
 	if _, ok := r.dedupSeen[actionID]; ok {
 		return true
 	}
-	r.dedupSeen[actionID] = struct{}{}
-	r.dedupOrder = append(r.dedupOrder, actionID)
-	if r.dedupMaxLen > 0 && len(r.dedupOrder) > r.dedupMaxLen {
-		// Use copy + truncate instead of `r.dedupOrder = r.dedupOrder[1:]`.
-		// The naive re-slice keeps the underlying array growing
-		// unboundedly: every append after a re-slice reuses the original
-		// backing array up to its capacity, then doubles. copy() shifts
-		// the live elements down so cap stays ~= dedupMaxLen and the
-		// evicted slot is overwritten on the next append.
-		evict := r.dedupOrder[0]
-		copy(r.dedupOrder, r.dedupOrder[1:])
-		r.dedupOrder = r.dedupOrder[:len(r.dedupOrder)-1]
-		delete(r.dedupSeen, evict)
-	}
+	r.dedupSeen[actionID] = now
 	return false
 }
 
