@@ -1,13 +1,15 @@
-// Package router owns the HCL-driven event-routing engine that replaces
-// the hard-coded switch in internal/app/routing.go's Route().
+// Package router owns the HCL-driven event-routing engine that replaced
+// the legacy hard-coded switch previously living in internal/app/routing.go.
+// internal/app/routing.go still hosts the RouteAction enum referenced by
+// this package.
 //
 // At startup the gateway parses a list of `route {}` blocks out of
 // router.hcl (the same file the kanban package reads). Each block has
 // a `when` expression (kept as hcl.Expression so file/line/column
 // diagnostics survive), a `do` action ("drop" | "dispatch" |
 // "terminate" | "notify_departure") and a `reason` string. Match
-// semantics are: top-down, first `when == true` wins — exactly the
-// switch ordering routing.go encodes today.
+// semantics are: top-down, first `when == true` wins, preserving the
+// ordering behavior of the legacy switch.
 //
 // The route engine owns `route {}` blocks. The sibling `kanban {}` block
 // continues to live in internal/app/kanban, and this package also owns the
