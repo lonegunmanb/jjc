@@ -109,6 +109,10 @@ Both CLI flags and environment variables are supported. CLI flags take precedenc
 | `--config-src` | `JJC_CONFIG_SRC` | | **yes** | Source of the JJC configuration bundle: a single directory (or any [hashicorp/go-getter v2](https://github.com/hashicorp/go-getter/tree/v2) URL such as `git::https://...`, `https://...`, `github.com/owner/repo`) that holds **both** `router.hcl` and every playbook `.md` file at the top level. Local directories are used in place. Remote sources are downloaded into a per-process temp directory at startup and removed on shutdown. |
 | `--kanban-board-id` | `TRELLO_KANBAN_BOARD_ID` | | **yes** | Trello board id (24-hex string from the board URL). The `kanban {}` block in `router.hcl` is resolved against this board's lists at startup. |
 
+## Shutdown timing
+
+During graceful shutdown (`DeleteWorker`, SIGINT, or SIGTERM), any worker currently mid-tool-call to Trello blocks until that call returns or hits the 30s `trelloToolTimeout`; operators should expect up to ~30s of tail per active worker beyond the dispatch close. This is intentional: upstream `github/copilot-sdk/go` does not yet propagate cancellation through `ToolInvocation.Context()`, and JJC can revisit this once the SDK exposes it.
+
 ---
 
 ## Quick start
