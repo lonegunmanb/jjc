@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 
 	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"github.com/lonegunmanb/jjc/internal/app/tunnel"
@@ -35,6 +37,10 @@ type Config struct {
 	// removes that directory at shutdown. Override via JJC_CONFIG_SRC
 	// or --config-src.
 	ConfigSrc string
+	// WorkDirBase is the absolute parent directory under which each
+	// Trello card gets its own local work_dir. Override via
+	// JJC_WORK_DIR_BASE or --work-dir-base.
+	WorkDirBase string
 	// KanbanBoardID is the Trello board the gateway resolves list
 	// names against at startup (see internal/app/kanban). Sourced from
 	// --kanban-board-id / TRELLO_KANBAN_BOARD_ID. Required: an empty
@@ -72,6 +78,7 @@ func loadConfigWithOutput(args []string, helpOutput io.Writer) (Config, error) {
 		Tunnel:        envOrDefault("TRELLO_GATEWAY_TUNNEL", tunnel.Cloudflared),
 		CopilotModel:  envOrDefault("COPILOT_MODEL", DefaultCopilotModel),
 		ConfigSrc:     os.Getenv("JJC_CONFIG_SRC"),
+		WorkDirBase:   envOrDefault("JJC_WORK_DIR_BASE", defaultWorkDirBase(runtime.GOOS)),
 		KanbanBoardID: os.Getenv("TRELLO_KANBAN_BOARD_ID"),
 		LogFile:       envOrDefault("LOG_FILE", sysevent.DefaultLogFileName),
 	}
@@ -91,6 +98,7 @@ func loadConfigWithOutput(args []string, helpOutput io.Writer) (Config, error) {
 	fs.StringVar(&cfg.Tunnel, "tunnel", cfg.Tunnel, "tunnel provider: cloudflared or none")
 	fs.StringVar(&cfg.CopilotModel, "copilot-model", cfg.CopilotModel, "Copilot model to use for the agent session")
 	fs.StringVar(&cfg.ConfigSrc, "config-src", cfg.ConfigSrc, "local directory or hashicorp/go-getter v2 source containing router.hcl and every playbook .md file (also JJC_CONFIG_SRC); remote sources are downloaded to a per-process temp dir at startup and removed on shutdown")
+	fs.StringVar(&cfg.WorkDirBase, "work-dir-base", cfg.WorkDirBase, "absolute parent directory for per-card work_dir directories (also JJC_WORK_DIR_BASE)")
 	fs.StringVar(&cfg.KanbanBoardID, "kanban-board-id", cfg.KanbanBoardID, "Trello board id whose lists the kanban {} block in router.hcl is resolved against")
 	fs.StringVar(&cfg.LogFile, "log-file", cfg.LogFile, "operator log file path")
 
@@ -164,6 +172,12 @@ func validateConfig(cfg Config) error {
 	if cfg.ConfigSrc == "" {
 		return errors.New("missing config src, set --config-src or JJC_CONFIG_SRC (a local directory or a hashicorp/go-getter v2 source containing router.hcl and playbook .md files)")
 	}
+	if cfg.WorkDirBase == "" {
+		return errors.New("missing work dir base, set --work-dir-base or JJC_WORK_DIR_BASE")
+	}
+	if !filepath.IsAbs(cfg.WorkDirBase) {
+		return fmt.Errorf("work dir base must be an absolute path: %s", cfg.WorkDirBase)
+	}
 	if cfg.KanbanBoardID == "" {
 		return errors.New("missing kanban board id, set --kanban-board-id or TRELLO_KANBAN_BOARD_ID")
 	}
@@ -185,9 +199,22 @@ func envOrDefault(key, fallback string) string {
 	return v
 }
 
+func EnsureWorkDirBase(dir string) error {
+	if dir == "" {
+		return errors.New("work dir base is empty")
+	}
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("work dir base must be an absolute path: %s", dir)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("ensure work dir base %s: %w", dir, err)
+	}
+	return nil
+}
+
 func (c Config) Redacted() string {
-	return fmt.Sprintf("listen=%s callback_url=%s tunnel=%s copilot_model=%s config_src=%s kanban_board_id=%s log_file=%s trello_api_secret=%s trello_api_key=%s trello_api_token=%s",
-		c.ListenAddr, c.CallbackURL, c.Tunnel, c.CopilotModel, c.ConfigSrc, c.KanbanBoardID, c.LogFile,
+	return fmt.Sprintf("listen=%s callback_url=%s tunnel=%s copilot_model=%s config_src=%s work_dir_base=%s kanban_board_id=%s log_file=%s trello_api_secret=%s trello_api_key=%s trello_api_token=%s",
+		c.ListenAddr, c.CallbackURL, c.Tunnel, c.CopilotModel, c.ConfigSrc, c.WorkDirBase, c.KanbanBoardID, c.LogFile,
 		redact(c.TrelloSecret), redact(c.TrelloAPIKey), redact(c.TrelloAPIToken))
 }
 

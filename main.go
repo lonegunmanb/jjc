@@ -68,6 +68,10 @@ func main() {
 	fmt.Fprintf(os.Stdout, "trello-gateway: logging to %s\n", logger.LogFile())
 
 	runner := app.NewCopilotRunner(cfg.CopilotModel, logger)
+	if err := app.EnsureWorkDirBase(cfg.WorkDirBase); err != nil {
+		emitAndExit(logger, "workdir_base_invalid", "dir=%s err=%v", cfg.WorkDirBase, err)
+	}
+	runner.WorkDirPreparer().SetBaseDir(cfg.WorkDirBase)
 
 	// Resolve --config-src to a local directory once, up-front. When the
 	// operator passed a remote source (git::https://..., https://..., a
