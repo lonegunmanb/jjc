@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -110,6 +111,25 @@ func (s *cancelBlockingSession) SendAndWait(ctx context.Context, prompt string) 
 }
 
 func (s *cancelBlockingSession) Disconnect() error {
+	return nil
+}
+
+type raceCancelSession struct {
+	started chan struct{}
+}
+
+func newRaceCancelSession() *raceCancelSession {
+	return &raceCancelSession{started: make(chan struct{})}
+}
+
+func (s *raceCancelSession) SendAndWait(ctx context.Context, prompt string) error {
+	close(s.started)
+	<-ctx.Done()
+	time.Sleep(2 * time.Millisecond)
+	return ctx.Err()
+}
+
+func (s *raceCancelSession) Disconnect() error {
 	return nil
 }
 
@@ -416,6 +436,68 @@ func TestDispatcherStopAfterStopReturnsError(t *testing.T) {
 	err := d.Dispatch(context.Background(), "evt", []byte(body))
 	if !errors.Is(err, ErrDispatcherStopped) {
 		t.Fatalf("expected ErrDispatcherStopped, got %v", err)
+	}
+}
+
+func TestDispatcherStopRacesWithDeleteWorker(t *testing.T) {
+	oldProcs := runtime.GOMAXPROCS(0)
+	if oldProcs < 4 {
+		runtime.GOMAXPROCS(4)
+		defer runtime.GOMAXPROCS(oldProcs)
+	}
+
+	const cardID = "race-card"
+	const body = `{"action":{"type":"updateCard","data":{"card":{"id":"` + cardID + `"},"listAfter":{"name":"Analyze"}}}}`
+
+	for i := 0; i < 200; i++ {
+		session := newRaceCancelSession()
+		d := NewDispatcher(sysevent.Default(), SessionFactoryFunc(func(context.Context, string, *ActivityTracker) (WorkerSession, error) {
+			return session, nil
+		}))
+		dispatchEvent(t, d, "evt-race", body)
+
+		select {
+		case <-session.started:
+		case <-time.After(2 * time.Second):
+			d.Stop()
+			t.Fatalf("iteration %d: timeout waiting for send to be in flight", i)
+		}
+
+		start := make(chan struct{})
+		done := make(chan struct{})
+		errCh := make(chan error, 1)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			d.Stop()
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			runtime.Gosched()
+			if _, err := d.DeleteWorker(cardID); err != nil && !errors.Is(err, ErrWorkerNotFound) {
+				errCh <- err
+			}
+		}()
+
+		close(start)
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iteration %d: Stop/DeleteWorker race timed out", i)
+		}
+		select {
+		case err := <-errCh:
+			t.Fatalf("iteration %d: DeleteWorker: %v", i, err)
+		default:
+		}
 	}
 }
 
