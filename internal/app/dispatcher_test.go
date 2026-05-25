@@ -91,6 +91,23 @@ func (f *fakeFactory) get(cardID string) *fakeSession {
 	return f.sessions[cardID]
 }
 
+type blockingSessionFactory struct {
+	ctxCh chan context.Context
+}
+
+func newBlockingSessionFactory() *blockingSessionFactory {
+	return &blockingSessionFactory{ctxCh: make(chan context.Context, 1)}
+}
+
+func (f *blockingSessionFactory) NewWorkerSession(ctx context.Context, _ string, _ *ActivityTracker) (WorkerSession, error) {
+	select {
+	case f.ctxCh <- ctx:
+	default:
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 type cancelBlockingSession struct {
 	started chan struct{}
 	ctxDone chan struct{}
@@ -150,6 +167,90 @@ func waitFor(t *testing.T, deadline time.Duration, cond func() bool, msg string)
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timeout waiting for: %s", msg)
+}
+
+func receiveSessionContext(t *testing.T, ch <-chan context.Context) context.Context {
+	t.Helper()
+	timeout, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	select {
+	case ctx := <-ch:
+		return ctx
+	case <-timeout.Done():
+		t.Fatalf("timeout waiting for worker session context")
+	}
+	return nil
+}
+
+func requireContextDone(t *testing.T, ctx context.Context, deadline time.Duration, msg string) {
+	t.Helper()
+	timeout, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	select {
+	case <-ctx.Done():
+	case <-timeout.Done():
+		t.Fatalf("timeout waiting for: %s", msg)
+	}
+}
+
+func requireChannelClosed(t *testing.T, ch <-chan struct{}, deadline time.Duration, msg string) {
+	t.Helper()
+	timeout, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	select {
+	case <-ch:
+	case <-timeout.Done():
+		t.Fatalf("timeout waiting for: %s", msg)
+	}
+}
+
+func TestRunWorker_NewWorkerSessionUsesCancellableCtx(t *testing.T) {
+	t.Parallel()
+	factory := newBlockingSessionFactory()
+	d := NewDispatcher(sysevent.Default(), factory)
+
+	const cardID = "ctx-stop-card"
+	body := `{"action":{"type":"updateCard","data":{"card":{"id":"` + cardID + `"},"listAfter":{"name":"Analyze"}}}}`
+	dispatchEvent(t, d, "evt", body)
+	sessionCtx := receiveSessionContext(t, factory.ctxCh)
+
+	stopped := make(chan struct{})
+	go func() {
+		d.Stop()
+		close(stopped)
+	}()
+
+	requireContextDone(t, sessionCtx, 200*time.Millisecond, "worker session context canceled by Stop")
+	requireChannelClosed(t, stopped, 2*time.Second, "Dispatcher.Stop to return")
+}
+
+func TestRunWorker_NewWorkerSessionCancelledByDeleteWorker(t *testing.T) {
+	t.Parallel()
+	factory := newBlockingSessionFactory()
+	d := NewDispatcher(sysevent.Default(), factory)
+
+	const cardID = "ctx-delete-card"
+	body := `{"action":{"type":"updateCard","data":{"card":{"id":"` + cardID + `"},"listAfter":{"name":"Analyze"}}}}`
+	dispatchEvent(t, d, "evt", body)
+	sessionCtx := receiveSessionContext(t, factory.ctxCh)
+
+	deleteErr := make(chan error, 1)
+	go func() {
+		_, err := d.DeleteWorker(cardID)
+		deleteErr <- err
+	}()
+
+	requireContextDone(t, sessionCtx, 200*time.Millisecond, "worker session context canceled by DeleteWorker")
+	timeout, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	select {
+	case err := <-deleteErr:
+		if err != nil {
+			t.Fatalf("DeleteWorker: %v", err)
+		}
+	case <-timeout.Done():
+		t.Fatalf("timeout waiting for DeleteWorker to return")
+	}
 }
 
 func TestAssembleDepartureNoticeUsesKanbanNames(t *testing.T) {
