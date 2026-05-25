@@ -12,8 +12,8 @@ require (
 	github.com/hashicorp/hcl/v2 v2.24.0
 	github.com/lonegunmanb/go-trello-sdk v0.0.0-20260515024100-709a1539f128
 	github.com/lonegunmanb/hclfuncs v0.12.0
-	github.com/zclconf/go-cty v1.16.3
-	golang.org/x/term v0.40.0
+	github.com/zclconf/go-cty v1.18.1
+	golang.org/x/term v0.43.0
 )
 
 require (
@@ -115,7 +115,7 @@ require (
 	golang.org/x/mod v0.32.0 // indirect
 	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/sys v0.44.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	golang.org/x/tools v0.41.0 // indirect
