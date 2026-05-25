@@ -313,7 +313,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, eventID string, rawBody []byt
 				eventID, decision.CardID, decision.ListAfter)
 			return nil
 		}
-		prompt := assembleDepartureNotice(rawBody, mustSlim(rawBody), decision.ListAfter)
+		prompt := assembleDepartureNotice(rawBody, mustSlim(rawBody), decision.ListAfter, d.kanbanView)
 		return d.enqueue(ctx, decision.CardID, dispatchMessage{
 			kind:    kindEvent,
 			eventID: eventID,
@@ -612,11 +612,16 @@ func mustSlim(rawBody []byte) []byte {
 // assembleDepartureNotice builds a per-event prompt asking the worker to
 // wind down because the card moved away from the active lists. The wording
 // mirrors MANAGER.md rule 6.
-func assembleDepartureNotice(rawBody, slimBody []byte, listAfter string) string {
+func assembleDepartureNotice(rawBody, slimBody []byte, listAfter string, view *kanban.Resolved) string {
+	planName, actionName := "Analyze", "In action"
+	if view != nil {
+		planName = view.Plan.Name
+		actionName = view.Action.Name
+	}
+
 	var b strings.Builder
 	b.WriteString("# TASK\n\n")
-	b.WriteString("The card has moved out of the active lists (Analyze / In action) ")
-	fmt.Fprintf(&b, "and into %q. ", listAfter)
+	fmt.Fprintf(&b, "The card has moved out of the active lists (%s / %s) and into %q. ", planName, actionName, listAfter)
 	b.WriteString("Per the worker contract: if you were executing a planned implementation, ")
 	b.WriteString("stop immediately. If you are mid-experiment, you may complete the current ")
 	b.WriteString("experiment to a clean state but do not start any new ones. Make sure all ")
