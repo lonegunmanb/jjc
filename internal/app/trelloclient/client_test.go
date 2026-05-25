@@ -226,6 +226,72 @@ func TestDeleteWebhookSurfacesOther4xx(t *testing.T) {
 	}
 }
 
+const secretWebhookToken = "super-secret-token-do-not-leak-abc123"
+
+func TestListTokenWebhooks_ErrorDoesNotLeakToken(t *testing.T) {
+	t.Run("transport error", func(t *testing.T) {
+		c := newTransportErrorClient(t)
+		_, err := c.ListTokenWebhooks(context.Background(), secretWebhookToken)
+		assertErrorDoesNotContain(t, err, secretWebhookToken)
+	})
+	t.Run("non-OK response", func(t *testing.T) {
+		c, _, done := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`server exploded`))
+		})
+		defer done()
+
+		_, err := c.ListTokenWebhooks(context.Background(), secretWebhookToken)
+		assertErrorDoesNotContain(t, err, secretWebhookToken)
+	})
+}
+
+func TestCreateTokenWebhook_ErrorDoesNotLeakToken(t *testing.T) {
+	t.Run("transport error", func(t *testing.T) {
+		c := newTransportErrorClient(t)
+		_, err := c.CreateTokenWebhook(context.Background(), secretWebhookToken, "board-1", "https://callback.example/webhook", "jjc-gateway")
+		assertErrorDoesNotContain(t, err, secretWebhookToken)
+	})
+	t.Run("non-OK response", func(t *testing.T) {
+		c, _, done := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`server exploded`))
+		})
+		defer done()
+
+		_, err := c.CreateTokenWebhook(context.Background(), secretWebhookToken, "board-1", "https://callback.example/webhook", "jjc-gateway")
+		assertErrorDoesNotContain(t, err, secretWebhookToken)
+	})
+}
+
+func TestDeleteWebhook_ErrorDoesNotLeakToken(t *testing.T) {
+	t.Run("transport error", func(t *testing.T) {
+		c := newTransportErrorClient(t)
+		err := c.DeleteWebhook(context.Background(), secretWebhookToken, "hook-1")
+		assertErrorDoesNotContain(t, err, secretWebhookToken)
+	})
+	t.Run("non-OK response", func(t *testing.T) {
+		c, _, done := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`bad token`))
+		})
+		defer done()
+
+		err := c.DeleteWebhook(context.Background(), secretWebhookToken, "hook-1")
+		assertErrorDoesNotContain(t, err, secretWebhookToken)
+	})
+}
+
+func assertErrorDoesNotContain(t *testing.T, err error, secret string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("error leaked token %q: %v", secret, err)
+	}
+}
+
 func TestDeleteWebhookRejectsEmptyArgs(t *testing.T) {
 	c, _, done := newTestServer(t, func(http.ResponseWriter, *http.Request) {
 		t.Fatal("server should not be hit when args are empty")
@@ -588,6 +654,25 @@ func TestDecodeCommentActionRejectsBadDate(t *testing.T) {
 	if _, err := decodeCommentAction(body); err == nil {
 		t.Fatal("unparseable date must surface as an error")
 	}
+}
+
+type transportErrorDoer struct{}
+
+func (transportErrorDoer) Do(*http.Request) (*http.Response, error) {
+	return nil, errors.New("network down")
+}
+
+func newTransportErrorClient(t *testing.T) Client {
+	t.Helper()
+	c, err := New(
+		WithCredentials("k", "tok"),
+		WithHTTPClient(transportErrorDoer{}),
+		WithLogger(sysevent.FromLogger(log.New(io.Discard, "", 0))),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return c
 }
 
 // stubDoer is a HttpRequestDoer that always returns a canned response.

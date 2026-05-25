@@ -382,9 +382,9 @@ func (c *sdkBackedClient) ListTokenWebhooks(ctx context.Context, token string) (
 	}
 	resp, err := c.sdk.GetTokensTokenWebhooks(ctx, token)
 	if err != nil {
-		return nil, fmt.Errorf("trelloclient: GET /tokens/%s/webhooks: %w", token, err)
+		return nil, fmt.Errorf("trelloclient: GET /tokens/{token}/webhooks: %w", err)
 	}
-	body, err := readAndCheck(resp, http.StatusOK, "GET /tokens/"+token+"/webhooks")
+	body, err := readAndCheck(resp, http.StatusOK, "GET /tokens/{token}/webhooks")
 	if err != nil {
 		return nil, err
 	}
@@ -429,9 +429,9 @@ func (c *sdkBackedClient) CreateTokenWebhook(ctx context.Context, token, boardID
 		IdModel:     idModel,
 	})
 	if err != nil {
-		return Webhook{}, fmt.Errorf("trelloclient: POST /tokens/%s/webhooks: %w", token, err)
+		return Webhook{}, fmt.Errorf("trelloclient: POST /tokens/{token}/webhooks: %w", err)
 	}
-	body, err := readAndCheck(resp, http.StatusOK, "POST /tokens/"+token+"/webhooks")
+	body, err := readAndCheck(resp, http.StatusOK, "POST /tokens/{token}/webhooks")
 	if err != nil {
 		return Webhook{}, err
 	}
@@ -455,7 +455,7 @@ func (c *sdkBackedClient) DeleteWebhook(ctx context.Context, token, webhookID st
 	}
 	resp, err := c.sdk.DeleteTokensTokenWebhooksIdwebhook(ctx, token, webhookID)
 	if err != nil {
-		return fmt.Errorf("trelloclient: DELETE /tokens/%s/webhooks/%s: %w", token, webhookID, err)
+		return fmt.Errorf("trelloclient: DELETE /tokens/{token}/webhooks/%s: %w", webhookID, err)
 	}
 	// 404 = the webhook is already gone (operator removed it manually
 	// or a previous shutdown cleanup already ran). Treat as success so
@@ -464,7 +464,7 @@ func (c *sdkBackedClient) DeleteWebhook(ctx context.Context, token, webhookID st
 		_ = resp.Body.Close()
 		return nil
 	}
-	if _, err := readAndCheck(resp, http.StatusOK, "DELETE /tokens/"+token+"/webhooks/"+webhookID); err != nil {
+	if _, err := readAndCheck(resp, http.StatusOK, "DELETE /tokens/{token}/webhooks/"+webhookID); err != nil {
 		return err
 	}
 	return nil
