@@ -195,16 +195,27 @@ func TestAssembleWorkerSystemPromptFallback(t *testing.T) {
 	}
 }
 
+func TestBuildCardContextUsesBootstrapWorkDir(t *testing.T) {
+	bs := workerBootstrap{cardID: "abc-card", workDir: "/custom/path/abc-card"}
+	got := buildCardContext(bs, nil)
+	if !strings.Contains(got, "\n- work_dir: /custom/path/abc-card\n") {
+		t.Fatalf("expected CARD CONTEXT to include real work_dir, got:\n%s", got)
+	}
+	if strings.Contains(got, `C:\project\abc-card`) {
+		t.Fatalf("CARD CONTEXT must not include hardcoded work_dir, got:\n%s", got)
+	}
+}
+
 // TestAssembleWorkerSystemPromptInjectsKanbanIDs pins the issue #5
 // requirement that CARD CONTEXT lists `kanban_*_id` for each role and
 // `kanban_agent_comment_prefixes` so WORKER.md §2 can drop the legacy
 // `TRELLO_*` env-var bridge.
 func TestAssembleWorkerSystemPromptInjectsKanbanIDs(t *testing.T) {
 	view := &kanban.Resolved{
-		BoardID:              "B1",
-		Plan:                 kanban.Role{Name: "Analyze", ID: "L_PLAN"},
-		Action:               kanban.Role{Name: "In action", ID: "L_ACTION"},
-		Done:                 kanban.Role{Name: "Done", ID: "L_DONE"},
+		BoardID: "B1",
+		Plan:    kanban.Role{Name: "Analyze", ID: "L_PLAN"},
+		Action:  kanban.Role{Name: "In action", ID: "L_ACTION"},
+		Done:    kanban.Role{Name: "Done", ID: "L_DONE"},
 		Wait: kanban.WaitRoles{
 			PlanReview:   kanban.Role{Name: "Ready for plan review", ID: "L_RPR"},
 			ActionReview: kanban.Role{Name: "Ready for review", ID: "L_RR"},

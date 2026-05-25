@@ -436,9 +436,6 @@ func (r *CopilotRunner) NewWorkerSession(ctx context.Context, cardID string, tra
 	if tracker != nil {
 		tracker.SetClassification(bs.classification)
 	}
-	systemPrompt := assembleWorkerSystemPrompt(cardID, bs, r.playbooks, r.kanbanView)
-	sysevent.Emitf(r.logger, "worker_session_create_attempt", "card_id=%s model=%s system_bytes=%d",
-		cardID, r.model, len(systemPrompt))
 
 	// Anchor every tool call (view/grep/glob/exec relative paths) to the
 	// per-card work_dir so the session cannot accidentally roam into the
@@ -452,9 +449,13 @@ func (r *CopilotRunner) NewWorkerSession(ctx context.Context, cardID string, tra
 		return nil, err
 	}
 	workDir := info.WorkDir
+	bs.workDir = workDir
 	if tracker != nil {
 		tracker.SetWorkDir(workDir)
 	}
+	systemPrompt := assembleWorkerSystemPrompt(cardID, bs, r.playbooks, r.kanbanView)
+	sysevent.Emitf(r.logger, "worker_session_create_attempt", "card_id=%s model=%s system_bytes=%d",
+		cardID, r.model, len(systemPrompt))
 
 	cfg := &copilot.SessionConfig{
 		Model:               r.model,
@@ -643,6 +644,7 @@ func (r *CopilotRunner) classifyForWorker(ctx context.Context, cardID string) wo
 type workerBootstrap struct {
 	cardID         string
 	configDir      string
+	workDir        string
 	firstLine      string
 	signals        router.CardSignals
 	classification CardClassification
@@ -730,8 +732,8 @@ func buildCardContext(bs workerBootstrap, view *kanban.Resolved) string {
 	b.WriteString("NOT re-run `git clone` or recreate the directory yourself.\n\n")
 	b.WriteString("- card_id: ")
 	b.WriteString(bs.cardID)
-	b.WriteString("\n- work_dir: C:\\project\\")
-	b.WriteString(bs.cardID)
+	b.WriteString("\n- work_dir: ")
+	b.WriteString(bs.workDir)
 	b.WriteString("\n")
 
 	if bs.ruleName != "" {
