@@ -265,9 +265,7 @@ func main() {
 	}()
 
 	if cfg.Tunnel != tunnel.None {
-		tunnelCtx, tunnelCancel := context.WithTimeout(ctx, 60*time.Second)
-		webhookID, createdNow, err := app.StartTunnelAndReconcileWithOwnership(tunnelCtx, &cfg, tunnelProvider, trelloClient, cfg.ListenAddr, logger)
-		tunnelCancel()
+		webhookID, createdNow, err := app.StartTunnelAndReconcileWithOwnership(ctx, &cfg, tunnelProvider, trelloClient, cfg.ListenAddr, logger)
 		if err != nil {
 			emitAndExit(logger, "tunnel_start_failed", "provider=%s err=%v", cfg.Tunnel, err)
 		}

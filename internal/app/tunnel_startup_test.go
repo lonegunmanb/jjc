@@ -23,6 +23,14 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+type fakeTunnelProvider struct {
+	publicURL string
+}
+
+func (p fakeTunnelProvider) Start(context.Context, string) (string, error) { return p.publicURL, nil }
+func (p fakeTunnelProvider) Stop() error                                   { return nil }
+func (p fakeTunnelProvider) Name() string                                  { return tunnel.Cloudflared }
+
 func TestStartTunnelAndReconcileDefaultPathUpdatesWebhook(t *testing.T) {
 	fakeCloudflared := buildFakeCloudflared(t)
 	var sawPut bool
@@ -155,6 +163,63 @@ func TestStartTunnelAndReconcileRetriesTrelloValidatorNotReachable(t *testing.T)
 	}
 }
 
+func TestStartTunnelAndReconcileRetriesValidatorErrorsUntilContextCancel(t *testing.T) {
+	oldWait := webhookReconcileRetryWait
+	var delays []time.Duration
+	webhookReconcileRetryWait = func(ctx context.Context, delay time.Duration) error {
+		delays = append(delays, delay)
+		return nil
+	}
+	t.Cleanup(func() { webhookReconcileRetryWait = oldWait })
+
+	var putAttempts int
+	trelloServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/tokens/tok/webhooks":
+			_, _ = w.Write([]byte(`[{"id":"hook-1","idModel":"board-1","callbackURL":"https://old.example/"}]`))
+		case r.Method == http.MethodPut && r.URL.Path == "/webhooks/hook-1":
+			putAttempts++
+			if putAttempts <= 6 {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"message":"URL (https://formal-sent-saw-gpl.trycloudflare.com/) did not return 200 status code, got 530","error":"VALIDATOR_URL_RETURNED_ERROR"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"hook-1"}`))
+		default:
+			t.Fatalf("unexpected Trello request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer trelloServer.Close()
+
+	trelloClient, err := trelloclient.New(
+		trelloclient.WithCredentials("key", "tok"),
+		trelloclient.WithServer(trelloServer.URL),
+		trelloclient.WithLogger(sysevent.FromLogger(log.New(io.Discard, "", 0))),
+	)
+	if err != nil {
+		t.Fatalf("trelloclient.New: %v", err)
+	}
+
+	cfg := Config{Tunnel: tunnel.Cloudflared, TrelloAPIToken: "tok", KanbanBoardID: "board-1"}
+	provider := fakeTunnelProvider{publicURL: "https://formal-sent-saw-gpl.trycloudflare.com/"}
+	id, err := StartTunnelAndReconcile(context.Background(), &cfg, provider, trelloClient, "127.0.0.1:18790", sysevent.FromLogger(log.New(io.Discard, "", 0)))
+	if err != nil {
+		t.Fatalf("StartTunnelAndReconcile: %v", err)
+	}
+	if id != "hook-1" || putAttempts != 7 {
+		t.Fatalf("expected retry to continue until seventh PUT succeeds, got id=%q putAttempts=%d", id, putAttempts)
+	}
+	wantDelays := []time.Duration{500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 10 * time.Second}
+	if len(delays) != len(wantDelays) {
+		t.Fatalf("retry delays = %v, want %v", delays, wantDelays)
+	}
+	for i := range wantDelays {
+		if delays[i] != wantDelays[i] {
+			t.Fatalf("retry delays = %v, want %v", delays, wantDelays)
+		}
+	}
+}
+
 func TestWebhookReconcileRetryDelayExponentiallyBacksOffAndCaps(t *testing.T) {
 	cases := []struct {
 		failedAttempt int
@@ -163,8 +228,9 @@ func TestWebhookReconcileRetryDelayExponentiallyBacksOffAndCaps(t *testing.T) {
 		{failedAttempt: 1, want: 500 * time.Millisecond},
 		{failedAttempt: 2, want: time.Second},
 		{failedAttempt: 3, want: 2 * time.Second},
-		{failedAttempt: 5, want: 5 * time.Second},
-		{failedAttempt: 6, want: 5 * time.Second},
+		{failedAttempt: 5, want: 8 * time.Second},
+		{failedAttempt: 6, want: 10 * time.Second},
+		{failedAttempt: 20, want: 10 * time.Second},
 	}
 
 	for _, tc := range cases {

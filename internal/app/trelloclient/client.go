@@ -506,7 +506,7 @@ func ReconcileBoardWebhook(ctx context.Context, c Client, token, boardID, callba
 	return hook.ID, true, nil
 }
 
-func IsWebhookValidatorNotReachable(err error) bool {
+func IsWebhookValidatorRetryable(err error) bool {
 	var statusErr *StatusError
 	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusBadRequest {
 		return false
@@ -514,10 +514,18 @@ func IsWebhookValidatorNotReachable(err error) bool {
 	var payload struct {
 		Error string `json:"error"`
 	}
-	if json.Unmarshal(statusErr.Body, &payload) == nil && payload.Error == "VALIDATOR_URL_NOT_REACHABLE" {
-		return true
+	if json.Unmarshal(statusErr.Body, &payload) == nil {
+		switch payload.Error {
+		case "VALIDATOR_URL_NOT_REACHABLE", "VALIDATOR_URL_RETURNED_ERROR":
+			return true
+		}
 	}
-	return strings.Contains(string(statusErr.Body), "VALIDATOR_URL_NOT_REACHABLE")
+	body := string(statusErr.Body)
+	return strings.Contains(body, "VALIDATOR_URL_NOT_REACHABLE") || strings.Contains(body, "VALIDATOR_URL_RETURNED_ERROR")
+}
+
+func IsWebhookValidatorNotReachable(err error) bool {
+	return IsWebhookValidatorRetryable(err)
 }
 
 // commentsPerPage is the maximum page size Trello accepts for the

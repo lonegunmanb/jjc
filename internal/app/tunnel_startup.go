@@ -66,10 +66,12 @@ func StartTunnelAndReconcile(ctx context.Context, cfg *Config, provider tunnel.P
 }
 
 const (
-	webhookReconcileMaxAttempts    = 6
+	tunnelProviderStartTimeout     = 60 * time.Second
 	webhookReconcileInitialBackoff = 500 * time.Millisecond
-	webhookReconcileMaxBackoff     = 5 * time.Second
+	webhookReconcileMaxBackoff     = 10 * time.Second
 )
+
+var webhookReconcileRetryWait = waitForWebhookReconcileRetry
 
 // StartTunnelAndReconcileWithOwnership is the full-fidelity variant of
 // StartTunnelAndReconcile. It additionally reports whether this call
@@ -92,7 +94,9 @@ func StartTunnelAndReconcileWithOwnership(ctx context.Context, cfg *Config, prov
 	if trelloClient == nil {
 		return "", false, errors.New("trello client is nil")
 	}
-	publicURL, err := provider.Start(ctx, localAddr)
+	startCtx, startCancel := context.WithTimeout(ctx, tunnelProviderStartTimeout)
+	publicURL, err := provider.Start(startCtx, localAddr)
+	startCancel()
 	if err != nil {
 		return "", false, err
 	}
@@ -114,14 +118,14 @@ func reconcileBoardWebhookWithRetry(ctx context.Context, trelloClient trelloclie
 		if err == nil {
 			return webhookID, createdNow, nil
 		}
-		if !trelloclient.IsWebhookValidatorNotReachable(err) || attempt >= webhookReconcileMaxAttempts {
+		if !trelloclient.IsWebhookValidatorRetryable(err) {
 			return "", false, err
 		}
 		delay := webhookReconcileRetryDelay(attempt)
 		if logger != nil {
 			sysevent.Emitf(logger, "trello_webhook_reconcile_retry", "attempt=%d next_attempt=%d delay=%s err=%v", attempt, attempt+1, delay, err)
 		}
-		if err := waitForWebhookReconcileRetry(ctx, delay); err != nil {
+		if err := webhookReconcileRetryWait(ctx, delay); err != nil {
 			return "", false, err
 		}
 	}

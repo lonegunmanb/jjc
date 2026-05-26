@@ -172,26 +172,44 @@ func TestReconcileBoardWebhookCreatesWhenMissing(t *testing.T) {
 	}
 }
 
-func TestIsWebhookValidatorNotReachableRecognizesTrelloValidationFailure(t *testing.T) {
-	c, _, done := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/tokens/tok/webhooks":
-			_, _ = w.Write([]byte(`[{"id":"hook-1","idModel":"board-1","callbackURL":"https://old.example/"}]`))
-		case r.Method == http.MethodPut && r.URL.Path == "/webhooks/hook-1":
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"message":"URL (https://stretch-knowledge-interesting-walker.trycloudflare.com/) not reachable. AbortError: Proxy response (500) !== 200 when HTTP Tunneling","error":"VALIDATOR_URL_NOT_REACHABLE"}`))
-		default:
-			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
-		}
-	})
-	defer done()
-
-	_, _, err := ReconcileBoardWebhook(context.Background(), c, "tok", "board-1", "https://stretch-knowledge-interesting-walker.trycloudflare.com/")
-	if err == nil {
-		t.Fatal("expected Trello validation error")
+func TestIsWebhookValidatorRetryableRecognizesTransientValidationFailures(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "not-reachable",
+			body: `{"message":"URL (https://stretch-knowledge-interesting-walker.trycloudflare.com/) not reachable. AbortError: Proxy response (500) !== 200 when HTTP Tunneling","error":"VALIDATOR_URL_NOT_REACHABLE"}`,
+		},
+		{
+			name: "returned-error",
+			body: `{"message":"URL (https://servers-victory-toxic-pierre.trycloudflare.com/) did not return 200 status code, got 530","error":"VALIDATOR_URL_RETURNED_ERROR"}`,
+		},
 	}
-	if !IsWebhookValidatorNotReachable(err) {
-		t.Fatalf("IsWebhookValidatorNotReachable(%v) = false", err)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _, done := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/tokens/tok/webhooks":
+					_, _ = w.Write([]byte(`[{"id":"hook-1","idModel":"board-1","callbackURL":"https://old.example/"}]`))
+				case r.Method == http.MethodPut && r.URL.Path == "/webhooks/hook-1":
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(tc.body))
+				default:
+					t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+				}
+			})
+			defer done()
+
+			_, _, err := ReconcileBoardWebhook(context.Background(), c, "tok", "board-1", "https://stretch-knowledge-interesting-walker.trycloudflare.com/")
+			if err == nil {
+				t.Fatal("expected Trello validation error")
+			}
+			if !IsWebhookValidatorRetryable(err) {
+				t.Fatalf("IsWebhookValidatorRetryable(%v) = false", err)
+			}
+		})
 	}
 }
 
