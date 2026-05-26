@@ -16,6 +16,19 @@ require (
 	golang.org/x/term v0.43.0
 )
 
+// Pin the Copilot SDK to the lonegunmanb/copilot-sdk fork's go/v0.3.2 tag.
+// The fork patches PingResponse.UnmarshalJSON to accept both JSON-number
+// (epoch ms, Windows CLI 1.0.51-2) and JSON-string (ISO-8601, Linux CLI
+// 1.0.51) wire shapes for result.timestamp; upstream v0.3.0 only accepts
+// the number form, which makes CopilotRunner.Start fail on Linux with:
+//
+//   json: cannot unmarshal string into Go struct field PingResponse.timestamp of type int64
+//
+// Remove this replace once https://github.com/github/copilot-sdk/issues/1356
+// is fixed upstream and a corresponding tag is published.
+// Tracking issue: https://github.com/lonegunmanb/jjc/issues/86
+replace github.com/github/copilot-sdk/go => github.com/lonegunmanb/copilot-sdk/go v0.3.2
+
 require (
 	codeberg.org/6543/go-yaml2json v1.0.0 // indirect
 	github.com/agext/levenshtein v1.2.3 // indirect
