@@ -3,8 +3,10 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"github.com/lonegunmanb/jjc/internal/app/trelloclient"
@@ -63,6 +65,12 @@ func StartTunnelAndReconcile(ctx context.Context, cfg *Config, provider tunnel.P
 	return id, err
 }
 
+const (
+	webhookReconcileMaxAttempts    = 6
+	webhookReconcileInitialBackoff = 500 * time.Millisecond
+	webhookReconcileMaxBackoff     = 5 * time.Second
+)
+
 // StartTunnelAndReconcileWithOwnership is the full-fidelity variant of
 // StartTunnelAndReconcile. It additionally reports whether this call
 // CREATED the webhook (vs. updating one that already existed). main.go
@@ -88,7 +96,7 @@ func StartTunnelAndReconcileWithOwnership(ctx context.Context, cfg *Config, prov
 	if err != nil {
 		return "", false, err
 	}
-	webhookID, createdNow, err := trelloclient.ReconcileBoardWebhook(ctx, trelloClient, cfg.TrelloAPIToken, cfg.KanbanBoardID, publicURL)
+	webhookID, createdNow, err := reconcileBoardWebhookWithRetry(ctx, trelloClient, cfg.TrelloAPIToken, cfg.KanbanBoardID, publicURL, logger)
 	if err != nil {
 		_ = provider.Stop()
 		return "", false, err
@@ -98,6 +106,47 @@ func StartTunnelAndReconcileWithOwnership(ctx context.Context, cfg *Config, prov
 		sysevent.Emitf(logger, "trello_webhook_reconciled", "provider=%s board_id=%s webhook_id=%s callback_url=%s created_now=%t", provider.Name(), cfg.KanbanBoardID, webhookID, publicURL, createdNow)
 	}
 	return webhookID, createdNow, nil
+}
+
+func reconcileBoardWebhookWithRetry(ctx context.Context, trelloClient trelloclient.Client, token, boardID, publicURL string, logger sysevent.Sink) (string, bool, error) {
+	for attempt := 1; ; attempt++ {
+		webhookID, createdNow, err := trelloclient.ReconcileBoardWebhook(ctx, trelloClient, token, boardID, publicURL)
+		if err == nil {
+			return webhookID, createdNow, nil
+		}
+		if !trelloclient.IsWebhookValidatorNotReachable(err) || attempt >= webhookReconcileMaxAttempts {
+			return "", false, err
+		}
+		delay := webhookReconcileRetryDelay(attempt)
+		if logger != nil {
+			sysevent.Emitf(logger, "trello_webhook_reconcile_retry", "attempt=%d next_attempt=%d delay=%s err=%v", attempt, attempt+1, delay, err)
+		}
+		if err := waitForWebhookReconcileRetry(ctx, delay); err != nil {
+			return "", false, err
+		}
+	}
+}
+
+func webhookReconcileRetryDelay(failedAttempt int) time.Duration {
+	delay := webhookReconcileInitialBackoff
+	for i := 1; i < failedAttempt; i++ {
+		delay *= 2
+		if delay >= webhookReconcileMaxBackoff {
+			return webhookReconcileMaxBackoff
+		}
+	}
+	return delay
+}
+
+func waitForWebhookReconcileRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("trello webhook validator retry canceled: %w", ctx.Err())
+	}
 }
 
 // DeleteGatewayCreatedWebhook removes a webhook this process previously

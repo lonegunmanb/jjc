@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -87,6 +89,67 @@ func TestCloudflaredProviderStartDoesNotLeakLogConsumerWhenReadersDrain(t *testi
 	}
 
 	assertNoGoroutineDelta(t, before, 3*time.Second)
+}
+
+func TestCloudflaredProviderStartContinuesWhenHEADSelfTestFails(t *testing.T) {
+	fakeCloudflared := buildExitingFakeCloudflared(t)
+	headClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodHead || r.URL.String() != "https://formal-sent-saw-gpl.trycloudflare.com/" {
+			t.Fatalf("unexpected HEAD self-test request: %s %s", r.Method, r.URL.String())
+		}
+		return nil, errors.New("network is unreachable")
+	})}
+	logger := &recordingSink{}
+	provider, err := NewCloudflaredProvider(
+		WithBinary(fakeCloudflared),
+		WithHTTPClient(headClient),
+		WithLogger(logger),
+	)
+	if err != nil {
+		t.Fatalf("NewCloudflaredProvider: %v", err)
+	}
+	defer func() { _ = provider.Stop() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	got, err := provider.Start(ctx, "127.0.0.1:18790")
+	if err != nil {
+		t.Fatalf("Start returned HEAD self-test error: %v", err)
+	}
+	if got != "https://formal-sent-saw-gpl.trycloudflare.com/" {
+		t.Fatalf("Start URL = %q", got)
+	}
+	waitForEvent(t, logger, "cloudflared_self_test_retry", 500*time.Millisecond)
+}
+
+type recordingSink struct {
+	mu     sync.Mutex
+	events []sysevent.Event
+}
+
+func (s *recordingSink) Emit(e sysevent.Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, e)
+}
+
+func waitForEvent(t *testing.T, sink *recordingSink, token string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		sink.mu.Lock()
+		for _, event := range sink.events {
+			if event.Token == token {
+				sink.mu.Unlock()
+				return
+			}
+		}
+		sink.mu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for event %q", token)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func assertNoGoroutineDelta(t *testing.T, before int, timeout time.Duration) {

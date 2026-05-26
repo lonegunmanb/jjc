@@ -91,6 +91,89 @@ func TestStartTunnelAndReconcileDefaultPathUpdatesWebhook(t *testing.T) {
 	}
 }
 
+func TestStartTunnelAndReconcileRetriesTrelloValidatorNotReachable(t *testing.T) {
+	fakeCloudflared := buildFakeCloudflared(t)
+	var putAttempts int
+	trelloServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/tokens/tok/webhooks":
+			_, _ = w.Write([]byte(`[{"id":"hook-1","idModel":"board-1","callbackURL":"https://old.example/"}]`))
+		case r.Method == http.MethodPut && r.URL.Path == "/webhooks/hook-1":
+			putAttempts++
+			if putAttempts == 1 {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"message":"URL (https://formal-sent-saw-gpl.trycloudflare.com/) not reachable. AbortError: Proxy response (500) !== 200 when HTTP Tunneling","error":"VALIDATOR_URL_NOT_REACHABLE"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"hook-1"}`))
+		default:
+			t.Fatalf("unexpected Trello request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer trelloServer.Close()
+
+	trelloClient, err := trelloclient.New(
+		trelloclient.WithCredentials("key", "tok"),
+		trelloclient.WithServer(trelloServer.URL),
+		trelloclient.WithLogger(sysevent.FromLogger(log.New(io.Discard, "", 0))),
+	)
+	if err != nil {
+		t.Fatalf("trelloclient.New: %v", err)
+	}
+
+	headClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    r,
+		}, nil
+	})}
+	provider, err := tunnel.NewCloudflaredProvider(
+		tunnel.WithBinary(fakeCloudflared),
+		tunnel.WithHTTPClient(headClient),
+		tunnel.WithLogger(sysevent.FromLogger(log.New(io.Discard, "", 0))),
+	)
+	if err != nil {
+		t.Fatalf("NewCloudflaredProvider: %v", err)
+	}
+	defer func() { _ = provider.Stop() }()
+
+	cfg := Config{Tunnel: tunnel.Cloudflared, TrelloAPIToken: "tok", KanbanBoardID: "board-1"}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	id, err := StartTunnelAndReconcile(ctx, &cfg, provider, trelloClient, "127.0.0.1:18790", sysevent.FromLogger(log.New(io.Discard, "", 0)))
+	if err != nil {
+		t.Fatalf("StartTunnelAndReconcile: %v", err)
+	}
+	if id != "hook-1" || putAttempts != 2 {
+		t.Fatalf("expected retry to succeed on second PUT, got id=%q putAttempts=%d", id, putAttempts)
+	}
+	if cfg.CallbackURL != "https://formal-sent-saw-gpl.trycloudflare.com/" {
+		t.Fatalf("callback URL not set in memory: %q", cfg.CallbackURL)
+	}
+}
+
+func TestWebhookReconcileRetryDelayExponentiallyBacksOffAndCaps(t *testing.T) {
+	cases := []struct {
+		failedAttempt int
+		want          time.Duration
+	}{
+		{failedAttempt: 1, want: 500 * time.Millisecond},
+		{failedAttempt: 2, want: time.Second},
+		{failedAttempt: 3, want: 2 * time.Second},
+		{failedAttempt: 5, want: 5 * time.Second},
+		{failedAttempt: 6, want: 5 * time.Second},
+	}
+
+	for _, tc := range cases {
+		if got := webhookReconcileRetryDelay(tc.failedAttempt); got != tc.want {
+			t.Fatalf("webhookReconcileRetryDelay(%d) = %s, want %s", tc.failedAttempt, got, tc.want)
+		}
+	}
+}
+
 // TestStartTunnelAndReconcileWithOwnershipReportsCreatedFlag verifies the
 // new createdNow return value: true when this call POSTed a brand-new
 // webhook (i.e. the gateway owns it and shutdown should delete it),

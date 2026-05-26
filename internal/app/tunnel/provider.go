@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lonegunmanb/jjc/internal/app/sysevent"
 )
 
 const (
@@ -35,10 +36,11 @@ type CloudflaredProvider struct {
 	httpClient *http.Client
 	logger     sysevent.Sink
 
-	mu      sync.Mutex
-	cmd     *exec.Cmd
-	waitErr chan error
-	stopped bool
+	mu             sync.Mutex
+	cmd            *exec.Cmd
+	waitErr        chan error
+	selfTestCancel context.CancelFunc
+	stopped        bool
 }
 
 type CloudflaredOption func(*CloudflaredProvider)
@@ -145,23 +147,51 @@ func (p *CloudflaredProvider) Start(ctx context.Context, localAddr string) (stri
 		return "", fmt.Errorf("cloudflared quick tunnel startup canceled: %w", ctx.Err())
 	}
 	publicURL = NormalizePublicURL(publicURL)
-	if err := p.waitForHEAD(ctx, publicURL); err != nil {
-		_ = p.Stop()
-		return "", err
-	}
+	p.startHEADSelfTest(publicURL)
 	return publicURL, nil
+}
+
+func (p *CloudflaredProvider) startHEADSelfTest(publicURL string) {
+	selfTestCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	p.mu.Lock()
+	if p.selfTestCancel != nil {
+		p.selfTestCancel()
+	}
+	p.selfTestCancel = cancel
+	p.mu.Unlock()
+
+	go func() {
+		defer cancel()
+		if err := p.waitForHEAD(selfTestCtx, publicURL); err != nil {
+			p.mu.Lock()
+			stopped := p.stopped
+			p.mu.Unlock()
+			if stopped && errors.Is(err, context.Canceled) {
+				return
+			}
+			sysevent.Emitf(p.logger, "cloudflared_self_test_failed", "url=%s err=%v", publicURL, err)
+		}
+	}()
 }
 
 func (p *CloudflaredProvider) Stop() error {
 	p.mu.Lock()
 	cmd := p.cmd
 	waitErr := p.waitErr
+	selfTestCancel := p.selfTestCancel
+	p.selfTestCancel = nil
 	if cmd == nil || cmd.Process == nil || p.stopped {
 		p.mu.Unlock()
+		if selfTestCancel != nil {
+			selfTestCancel()
+		}
 		return nil
 	}
 	p.stopped = true
 	p.mu.Unlock()
+	if selfTestCancel != nil {
+		selfTestCancel()
+	}
 
 	if err := terminateProcess(cmd.Process); err != nil && !errors.Is(err, exec.ErrNotFound) {
 		return fmt.Errorf("stop cloudflared: %w", err)

@@ -506,6 +506,20 @@ func ReconcileBoardWebhook(ctx context.Context, c Client, token, boardID, callba
 	return hook.ID, true, nil
 }
 
+func IsWebhookValidatorNotReachable(err error) bool {
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(statusErr.Body, &payload) == nil && payload.Error == "VALIDATOR_URL_NOT_REACHABLE" {
+		return true
+	}
+	return strings.Contains(string(statusErr.Body), "VALIDATOR_URL_NOT_REACHABLE")
+}
+
 // commentsPerPage is the maximum page size Trello accepts for the
 // /cards/{id}/actions endpoint (per the API docs; values above 1000 are
 // clamped server-side). The generated SDK does not expose `limit` /
@@ -659,13 +673,27 @@ func readAndCheck(resp *http.Response, want int, op string) ([]byte, error) {
 		return nil, fmt.Errorf("trelloclient: %s: read body: %w", op, err)
 	}
 	if resp.StatusCode != want {
-		preview := string(body)
-		if len(preview) > 512 {
-			preview = preview[:512] + "..."
-		}
-		return body, fmt.Errorf("trelloclient: %s: unexpected status %d: %s", op, resp.StatusCode, preview)
+		return body, &StatusError{Operation: op, StatusCode: resp.StatusCode, Body: body}
 	}
 	return body, nil
+}
+
+type StatusError struct {
+	Operation  string
+	StatusCode int
+	Body       []byte
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("trelloclient: %s: unexpected status %d: %s", e.Operation, e.StatusCode, previewBody(e.Body))
+}
+
+func previewBody(body []byte) string {
+	preview := string(body)
+	if len(preview) > 512 {
+		preview = preview[:512] + "..."
+	}
+	return preview
 }
 
 // firstNonEmptyLine returns the first line of s with leading/trailing
