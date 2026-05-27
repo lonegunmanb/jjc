@@ -117,7 +117,27 @@ During graceful shutdown (`DeleteWorker`, SIGINT, or SIGTERM), any worker curren
 
 ## Quick start
 
-### 1. Install
+### 1. Agent-assisted setup (recommended)
+
+You can run a coding agent that supports repo skills (for example, GitHub Copilot CLI or OpenAI Codex) from the project root and tell it to run setup.
+
+Typical flow:
+
+```bash
+cd /path/to/jjc
+# start your coding agent in this repository, then tell it:
+# "Run the jjc-setup skill and complete JJC setup end to end."
+```
+
+Using the in-repo `.agents/skills/jjc-setup` playbook, the agent can guide or perform the full bootstrap sequence:
+
+- verify/install runtime dependencies (`go`, `git`, `cloudflared`);
+- install `jjc` (`go install github.com/lonegunmanb/jjc@latest`);
+- guide Trello board provisioning and credential collection (`TRELLO_API_KEY`, `TRELLO_API_TOKEN`, `TRELLO_API_SECRET`, `TRELLO_KANBAN_BOARD_ID`);
+- prepare `router.hcl` + playbook `.md` files under one `--config-src` directory;
+- export required environment variables and verify the first startup.
+
+### 1.1 Manual install (if you prefer)
 
 ```bash
 go install github.com/lonegunmanb/jjc@latest
