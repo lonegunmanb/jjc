@@ -43,6 +43,8 @@ skill.
 2. **Trello side** — board, API key, token, webhook secret, board id.
 3. **GitHub Copilot side** — auth + model availability check.
 4. **Build / install the binary** — from source or `go install`.
+  Then set `COPILOT_MODEL` to a model ID supported by the current
+  GitHub Copilot CLI account.
 5. **Config-src bundle** — a single directory (or remote go-getter v2
    URL) that holds both `router.hcl` and the playbook `.md` files.
 6. **Environment variables** — the full set, with safe-handling notes.
@@ -252,6 +254,46 @@ Only deviate from `go install … @latest` in these specific cases:
 - **Air-gapped or proxy-blocked host.** Build on a connected machine
   with `go build -o jjc ./` (or `go build -o jjc.exe ./` on Windows)
   and copy the resulting binary into the target's `PATH`.
+
+### 4.1 Required after install: set `COPILOT_MODEL`
+
+After `jjc` is installed, require the operator to set `COPILOT_MODEL`
+before the first startup.
+
+Hard requirement:
+
+- `COPILOT_MODEL` must be a model ID supported by the **current
+  GitHub Copilot CLI account**.
+- Do not guess model names from memory or from another account/team.
+
+Recommended workflow:
+
+1. Ask the operator which model they want to use.
+2. Ask them to list models available to their current Copilot CLI
+   login (for example with `copilot models list` if that command is
+   available in their CLI version).
+3. Require that `COPILOT_MODEL` exactly matches one returned model ID.
+
+Set the variable in the launch shell (examples):
+
+PowerShell:
+
+```powershell
+$env:COPILOT_MODEL = '<exact-model-id-from-copilot-cli>'
+```
+
+bash / zsh:
+
+```bash
+export COPILOT_MODEL='<exact-model-id-from-copilot-cli>'
+```
+
+Verification:
+
+- Start `jjc` once with the configured value.
+- If startup logs `event=copilot_model_not_available`, the configured
+  value is not valid for that Copilot account; pick one from the CLI's
+  available-model list and retry.
 
 ## 5. Config-src bundle
 
