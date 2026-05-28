@@ -11,6 +11,27 @@ import (
 	catppuccin "github.com/catppuccin/go"
 )
 
+const (
+	tuiDefaultTerminalWidth  = 100
+	tuiDefaultTerminalHeight = 30
+	tuiWideMainBreakpoint    = 80
+	tuiMainPanelGapWidth     = 1
+	tuiPanelBorderWidth      = 2
+	tuiPanelPaddingWidth     = 2
+	tuiPanelFrameHeight      = 2
+)
+
+type tuiLayout struct {
+	Width       int
+	Height      int
+	BodyHeight  int
+	MainHeight  int
+	EventsHeight int
+	WideMain    bool
+	WorkersWidth int
+	ActivityWidth int
+}
+
 // ---------- Catppuccin Mocha theme ----------
 
 var mocha = catppuccin.Mocha
@@ -295,35 +316,32 @@ func (m *tuiModel) dumpSelected() {
 // ---------- View ----------
 
 func (m tuiModel) View() string {
-	if m.width < 40 || m.height < 12 {
+	width, height := tuiNormalizeTerminalSize(m.width, m.height)
+	if width < 40 || height < 12 {
 		return sMuted.Render("Terminal too small (need at least 40×12)")
 	}
 	if m.confirmDelete {
-		return m.viewConfirmDelete()
+		return m.viewConfirmDelete(width, height)
 	}
 
-	header := m.viewHeader()
-	footer := m.viewFooter()
-
-	// Height accounting: header(1) + gap(1) + main + events + footer(1) = m.height
-	remaining := m.height - 3
-	eventsH := tuiClamp(remaining/4, 5, 9)
-	mainH := remaining - eventsH
+	header := m.viewHeader(width)
+	footer := m.viewFooter(width)
+	layout := tuiCalculateLayout(width, height, lipgloss.Height(header), lipgloss.Height(footer))
 
 	var main string
-	if m.width >= 80 {
-		main = m.viewWideMain(mainH)
+	if layout.WideMain {
+		main = m.viewWideMain(layout.WorkersWidth, layout.ActivityWidth, layout.MainHeight)
 	} else {
-		main = m.viewNarrowMain(mainH)
+		main = m.viewNarrowMain(layout.Width, layout.MainHeight)
 	}
-	events := m.viewEventsPanel(m.width, eventsH)
+	events := m.viewEventsPanel(layout.Width, layout.EventsHeight)
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, "", main, events, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, header, main, events, footer)
 }
 
 // viewConfirmDelete renders the centered delete-confirmation modal that
 // replaces the regular layout while m.confirmDelete is true.
-func (m tuiModel) viewConfirmDelete() string {
+func (m tuiModel) viewConfirmDelete(width, height int) string {
 	workDir := m.deleteWorkDir
 	if workDir == "" {
 		workDir = "(none recorded)"
@@ -344,23 +362,27 @@ func (m tuiModel) viewConfirmDelete() string {
 		BorderForeground(mc(mocha.Red())).
 		Padding(1, 3).
 		Render(body)
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
 }
 
-func (m tuiModel) viewHeader() string {
+func (m tuiModel) viewHeader(width int) string {
 	up := tuiFmtDuration(time.Since(m.startTime))
+	listen := tuiTruncate(m.listenAddr, 24)
+	model := tuiTruncate(m.modelName, 24)
 	parts := []string{
 		sHeaderTitle.Render("Trello Gateway"),
-		sHeaderInfo.Render(m.listenAddr),
-		sHeaderInfo.Render(m.modelName),
+		sHeaderInfo.Render(listen),
+		sHeaderInfo.Render(model),
 		sHeaderInfo.Render(fmt.Sprintf("%d workers", len(m.workers))),
 		sHeaderInfo.Render("up " + up),
 	}
 	sep := sHeaderInfo.Render("  ·  ")
-	return " " + strings.Join(parts, sep)
+	line := " " + strings.Join(parts, sep)
+	textWidth := tuiClamp(width-2, 1, width)
+	return lipgloss.NewStyle().Width(width).Render(tuiTruncate(line, textWidth))
 }
 
-func (m tuiModel) viewFooter() string {
+func (m tuiModel) viewFooter(width int) string {
 	keys := []struct{ key, desc string }{
 		{"q", "quit"},
 		{"tab", "switch panel"},
@@ -374,39 +396,38 @@ func (m tuiModel) viewFooter() string {
 	}
 	line := " " + strings.Join(parts, "  ")
 	if m.statusMsg != "" && time.Now().Before(m.statusUntil) {
-		line += "   " + sFooterDesc.Render(m.statusMsg)
+		statusMax := tuiClamp(width/3, 20, 80)
+		line += "   " + sFooterDesc.Render(tuiTruncate(m.statusMsg, statusMax))
 	}
-	return line
+	textWidth := tuiClamp(width-2, 1, width)
+	return lipgloss.NewStyle().Width(width).Render(tuiTruncate(line, textWidth))
 }
 
 // ---------- Wide layout (≥80 cols) ----------
 
-func (m tuiModel) viewWideMain(h int) string {
-	leftW := tuiClamp(m.width*2/5, 28, 42)
-	rightW := m.width - leftW - 1 // 1 char gap
-	left := m.viewWorkerList(leftW, h)
-	right := m.viewActivityPanel(rightW, h)
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
+func (m tuiModel) viewWideMain(workersW, activityW, h int) string {
+	left := m.viewWorkerList(workersW, h)
+	right := m.viewActivityPanel(activityW, h)
+	return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", tuiMainPanelGapWidth), right)
 }
 
 // ---------- Narrow layout (<80 cols) ----------
 
-func (m tuiModel) viewNarrowMain(h int) string {
+func (m tuiModel) viewNarrowMain(totalW, h int) string {
 	switch m.focus {
 	case focusActivity:
-		return m.viewActivityPanel(m.width, h)
+		return m.viewActivityPanel(totalW, h)
 	default:
-		return m.viewWorkerList(m.width, h)
+		return m.viewWorkerList(totalW, h)
 	}
 }
 
 // ---------- Worker list panel ----------
 
 func (m tuiModel) viewWorkerList(w, h int) string {
-	innerW := w - 4 // border(2) + padding(2)
-	innerH := h - 2 // border(2)
+	innerW, innerH := tuiPanelInnerSize(w, h)
 	if innerW < 10 || innerH < 3 {
-		return panelStyle(m.focus == focusWorkers).Width(innerW).Height(innerH).Render("…")
+		return tuiRenderPanel(m.focus == focusWorkers, w, h, "…")
 	}
 
 	var lines []string
@@ -436,21 +457,20 @@ func (m tuiModel) viewWorkerList(w, h int) string {
 	}
 
 	content := strings.Join(lines, "\n")
-	return panelStyle(m.focus == focusWorkers).Width(innerW).Height(innerH).Render(content)
+	return tuiRenderPanel(m.focus == focusWorkers, w, h, content)
 }
 
 // ---------- Activity panel ----------
 
 func (m tuiModel) viewActivityPanel(w, h int) string {
-	innerW := w - 4
-	innerH := h - 2
+	innerW, innerH := tuiPanelInnerSize(w, h)
 	if innerW < 10 || innerH < 3 {
-		return panelStyle(m.focus == focusActivity).Width(innerW).Height(innerH).Render("…")
+		return tuiRenderPanel(m.focus == focusActivity, w, h, "…")
 	}
 
 	if !m.selOK || len(m.workers) == 0 {
 		content := sPanelTitle.Render("Activity") + "\n\n" + sMuted.Render("No worker selected")
-		return panelStyle(m.focus == focusActivity).Width(innerW).Height(innerH).Render(content)
+		return tuiRenderPanel(m.focus == focusActivity, w, h, content)
 	}
 
 	st := m.selStatus
@@ -488,23 +508,25 @@ func (m tuiModel) viewActivityPanel(w, h int) string {
 	}
 	for i := len(entries) - 1; i >= start; i-- {
 		e := entries[i]
-		ts := sMuted.Render(e.At.Format("15:04:05"))
+		tsLabel := e.At.Format("15:04:05")
+		kindLabel := tuiKindLabel(e.Kind)
+		detailMax := tuiDetailWidth(innerW, 5, tsLabel, kindLabel)
+		detail := tuiTruncate(formatEntryDetail(e), detailMax)
+		ts := sMuted.Render(tsLabel)
 		kind := tuiStyledKind(e.Kind)
-		detail := tuiTruncate(formatEntryDetail(e), innerW-22)
 		lines = append(lines, fmt.Sprintf("%s  %s  %s", ts, kind, sSubtext.Render(detail)))
 	}
 
 	content := strings.Join(lines, "\n")
-	return panelStyle(m.focus == focusActivity).Width(innerW).Height(innerH).Render(content)
+	return tuiRenderPanel(m.focus == focusActivity, w, h, content)
 }
 
 // ---------- Global events panel ----------
 
 func (m tuiModel) viewEventsPanel(w, h int) string {
-	innerW := w - 4
-	innerH := h - 2
+	innerW, innerH := tuiPanelInnerSize(w, h)
 	if innerW < 10 || innerH < 2 {
-		return panelStyle(m.focus == focusEvents).Width(innerW).Height(innerH).Render("…")
+		return tuiRenderPanel(m.focus == focusEvents, w, h, "…")
 	}
 
 	var lines []string
@@ -521,19 +543,24 @@ func (m tuiModel) viewEventsPanel(w, h int) string {
 		}
 		for i := len(events) - 1; i >= start; i-- {
 			e := events[i]
-			ts := sMuted.Render(e.At.Format("15:04:05"))
-			cid := sSubtext.Render(e.CardID)
+			tsLabel := e.At.Format("15:04:05")
+			cidLabel := tuiTruncate(e.CardID, tuiClamp(innerW/4, 8, 24))
+			kindLabel := tuiKindLabel(e.Kind)
+			detailMax := tuiDetailWidth(innerW, 7, tsLabel, cidLabel, kindLabel)
+			detail := tuiTruncate(e.Summary, detailMax)
+			ts := sMuted.Render(tsLabel)
+			cid := sSubtext.Render(cidLabel)
 			kind := tuiStyledKind(e.Kind)
-			detail := tuiTruncate(e.Summary, innerW-30)
 			lines = append(lines, fmt.Sprintf("%s  %s  %s  %s", ts, cid, kind, sSubtext.Render(detail)))
 		}
 	}
 
 	content := strings.Join(lines, "\n")
-	return panelStyle(m.focus == focusEvents).Width(innerW).Height(innerH).Render(content)
+	return tuiRenderPanel(m.focus == focusEvents, w, h, content)
 }
 
 // ---------- Helpers ----------
+// Rendering helpers (state/kind labels + human-readable durations).
 
 func tuiStyledState(s WorkerState) string {
 	switch s {
@@ -557,14 +584,14 @@ func tuiStyledState(s WorkerState) string {
 }
 
 func tuiStyledKind(kind string) string {
-	padded := fmt.Sprintf("%-16s", kind)
+	padded := tuiKindLabel(kind)
 	switch {
 	case strings.HasPrefix(kind, "tool"):
 		return sKindTool.Render(padded)
 	case kind == "assistant_message" || kind == "assistant":
-		return sKindAssistant.Render(fmt.Sprintf("%-16s", "assistant"))
+		return sKindAssistant.Render(padded)
 	case kind == "user_message":
-		return sKindUser.Render(fmt.Sprintf("%-16s", "user_msg"))
+		return sKindUser.Render(padded)
 	case kind == "error":
 		return sKindError.Render(padded)
 	case kind == "idle", kind == "session_idle_reaped":
@@ -576,6 +603,17 @@ func tuiStyledKind(kind string) string {
 	default:
 		return sMuted.Render(padded)
 	}
+}
+
+func tuiKindLabel(kind string) string {
+	label := kind
+	switch {
+	case kind == "assistant_message" || kind == "assistant":
+		label = "assistant"
+	case kind == "user_message":
+		label = "user_msg"
+	}
+	return fmt.Sprintf("%-16s", label)
 }
 
 func tuiShortAgo(t time.Time) string {
@@ -604,19 +642,7 @@ func tuiFmtDuration(d time.Duration) string {
 	return fmt.Sprintf("%dm%02ds", m, s)
 }
 
-func tuiTruncate(s string, maxLen int) string {
-	if maxLen <= 0 {
-		return ""
-	}
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	if maxLen <= 3 {
-		return string(runes[:maxLen])
-	}
-	return string(runes[:maxLen-1]) + "…"
-}
+// Text-width helpers (Unicode-width aware truncation and bounds clamp).
 
 func tuiClamp(v, lo, hi int) int {
 	if v < lo {
@@ -626,6 +652,110 @@ func tuiClamp(v, lo, hi int) int {
 		return hi
 	}
 	return v
+}
+
+func tuiTruncate(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= maxLen {
+		return s
+	}
+	runes := []rune(s)
+	if maxLen <= 1 {
+		return "…"
+	}
+	for len(runes) > 0 {
+		candidate := string(runes) + "…"
+		if lipgloss.Width(candidate) <= maxLen {
+			return candidate
+		}
+		runes = runes[:len(runes)-1]
+	}
+	return "…"
+}
+
+// Layout helpers (terminal normalization and per-view budget calculation).
+
+func tuiNormalizeTerminalSize(width, height int) (int, int) {
+	if width <= 0 {
+		width = tuiDefaultTerminalWidth
+	}
+	if height <= 0 {
+		height = tuiDefaultTerminalHeight
+	}
+	return width, height
+}
+
+func tuiCalculateLayout(width, height, headerHeight, footerHeight int) tuiLayout {
+	bodyH := height - headerHeight - footerHeight
+	if bodyH < 6 {
+		bodyH = 6
+	}
+
+	eventsH := tuiClamp(bodyH/4, 3, 9)
+	mainH := bodyH - eventsH
+	if mainH < 3 {
+		mainH = 3
+		eventsH = bodyH - mainH
+		if eventsH < 1 {
+			eventsH = 1
+		}
+	}
+
+	wide := width >= tuiWideMainBreakpoint
+	workersW := width
+	activityW := width
+	if wide {
+		workersW = tuiClamp(width*2/5, 28, 42)
+		activityW = width - workersW - tuiMainPanelGapWidth
+		if activityW < 1 {
+			activityW = 1
+		}
+	}
+
+	return tuiLayout{
+		Width:         width,
+		Height:        height,
+		BodyHeight:    bodyH,
+		MainHeight:    mainH,
+		EventsHeight:  eventsH,
+		WideMain:      wide,
+		WorkersWidth:  workersW,
+		ActivityWidth: activityW,
+	}
+}
+
+// Panel helpers (shared frame math and rendering with hard clipping).
+
+func tuiPanelInnerSize(totalWidth, totalHeight int) (int, int) {
+	innerW := totalWidth - tuiPanelBorderWidth - tuiPanelPaddingWidth
+	if innerW < 1 {
+		innerW = 1
+	}
+	innerH := totalHeight - tuiPanelFrameHeight
+	if innerH < 1 {
+		innerH = 1
+	}
+	return innerW, innerH
+}
+
+func tuiRenderPanel(focused bool, totalWidth, totalHeight int, content string) string {
+	innerW, innerH := tuiPanelInnerSize(totalWidth, totalHeight)
+	return panelStyle(focused).
+		Width(innerW).
+		Height(innerH).
+		MaxWidth(innerW).
+		MaxHeight(innerH).
+		Render(content)
+}
+
+func tuiDetailWidth(innerWidth int, reserved int, columns ...string) int {
+	remaining := innerWidth - reserved
+	for _, col := range columns {
+		remaining -= lipgloss.Width(col)
+	}
+	return remaining
 }
 
 // tuiFmtTarget renders the GitHub target the worker is operating on, e.g.
